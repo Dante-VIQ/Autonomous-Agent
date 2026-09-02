@@ -1,0 +1,6 @@
+# Cron job for Hostinger shared hosting
+# Run every 15 minutes
+*/15 * * * * cd /home/your_username/python-agent && /usr/bin/python3 src/main.py >> logs/agent.log 2>&1
+
+# Or run every minute for testing
+* * * * * cd /home/your_username/python-agent && /usr/bin/python3 src/main.py >> logs/agent.log 2>&1
