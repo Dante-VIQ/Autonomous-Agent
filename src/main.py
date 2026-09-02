@@ -10,22 +10,13 @@ from .config import Config
 from .orchestrator import Orchestrator
 from .utils.logger import setup_logger
 
-# Setup logger
 logger = setup_logger(__name__, Config.LOG_LEVEL)
 
 async def run_cycle() -> Dict[str, Any]:
-    """
-    Run a single agent cycle asynchronously.
-    This is the main entry point for the agent.
-    """
+    """Run a single agent cycle using the Orchestrator."""
     logger.info("🔄 Starting agent cycle...")
-    logger.info(f"   Brand ID: {Config.BRAND_ID}")
-    logger.info(f"   Interval: {Config.AGENT_INTERVAL}s")
-    logger.info(f"   Model: {Config.OLLAMA_MODEL} (Ollama) / {Config.GEMINI_MODEL} (fallback)")
-    
     orchestrator = Orchestrator(Config.BRAND_ID)
     result = await orchestrator.run_cycle()
-    
     logger.info("✅ Cycle completed")
     return result
 
@@ -33,7 +24,6 @@ async def run_forever():
     """Run the agent in an infinite loop."""
     logger.info("🚀 Starting Vumbi Python Agent (continuous mode)")
     
-    # Setup signal handlers for graceful shutdown
     loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
     
@@ -44,10 +34,8 @@ async def run_forever():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
     
-    # Run first cycle immediately
     await run_cycle()
     
-    # Then run on schedule
     while not stop_event.is_set():
         try:
             await asyncio.sleep(Config.AGENT_INTERVAL)
@@ -58,11 +46,10 @@ async def run_forever():
             break
         except Exception as e:
             logger.error(f"❌ Cycle failed: {e}")
-            await asyncio.sleep(60)  # Back off on error
+            await asyncio.sleep(60)
     
     logger.info("🛑 Agent stopped gracefully")
 
-# If run as a script, start the continuous loop
 if __name__ == "__main__":
     try:
         asyncio.run(run_forever())

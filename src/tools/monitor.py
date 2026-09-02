@@ -3,16 +3,14 @@
 import json
 import logging
 from typing import List, Dict, Any
-from strands import tool
 from ..utils.api_client import LaravelApiClient
 from ..config import Config
 
 logger = logging.getLogger(__name__)
 
-@tool
-def monitor_opportunities(brand_id: int) -> str:
+async def monitor_opportunities(brand_id: int) -> str:
     """
-    Scan for marketing opportunities (SEO issues, pending leads, campaign problems).
+    Scan for marketing opportunities.
     Uses REAL data from Vumbi Ventures Laravel backend.
     
     Returns:
@@ -21,10 +19,9 @@ def monitor_opportunities(brand_id: int) -> str:
     client = LaravelApiClient()
     
     try:
-        # Fetch real data from Laravel
-        opportunities = client.get_opportunities(brand_id)
+        # ✅ Await the async call
+        opportunities = await client.get_opportunities(brand_id)
         
-        # Log the count for monitoring
         logger.info(f"Found {len(opportunities)} opportunities for brand {brand_id}")
         
         return json.dumps({

@@ -1,10 +1,7 @@
 # src/specialists/base.py
 
-import json
 import logging
 from typing import Dict, Any, List, Optional
-from strands import Agent
-from strands.models import OllamaModel, GeminiModel
 from ..config import Config
 from ..utils.api_client import LaravelApiClient
 from ..policies.safety import SafetyPolicy
@@ -13,139 +10,120 @@ from ..memory.experience import ExperienceMemory
 logger = logging.getLogger(__name__)
 
 class BaseSpecialist:
-    """Base class for all specialists."""
+    """
+    Base class for all specialists.
+    A specialist is responsible for reasoning about opportunities in its domain.
+    """
     
-    def __init__(self, name: str, tools: List, system_prompt: str):
+    def __init__(self, name: str, domain: str, tools: List, system_prompt: str):
         self.name = name
+        self.domain = domain
         self.client = LaravelApiClient()
         self.safety = SafetyPolicy()
         self.memory = ExperienceMemory()
+        self.tools = tools
+        self.system_prompt = system_prompt
         
         # Setup model (Ollama first, Gemini fallback)
         self.model = self._setup_model()
-        
-        # Create the specialist agent
-        self.agent = Agent(
-            model=self.model,
-            tools=tools,
-            system_prompt=system_prompt
-        )
     
     def _setup_model(self):
         """Setup model with Ollama as primary, Gemini as fallback."""
-        # Try Ollama first (cost savings)
+        from strands.models import OllamaModel, GeminiModel
+        
         try:
             return OllamaModel(
                 host=Config.OLLAMA_HOST,
                 model_id=Config.OLLAMA_MODEL,
-                params={"temperature": 0.7, "max_tokens": 2048}
+                temperature=0.7,
+                max_tokens=2048
             )
         except Exception as e:
             logger.warning(f"Ollama not available: {e}. Falling back to Gemini.")
             return GeminiModel(
                 client_args={"api_key": Config.GEMINI_API_KEY},
                 model_id=Config.GEMINI_MODEL,
-                params={"temperature": 0.7, "max_tokens": 2048}
+                temperature=0.7,
+                max_tokens=2048
             )
     
-    def execute_with_safety(self, opportunity: Dict[str, Any], brand_id: int) -> Dict[str, Any]:
-        """Execute with hard safety gate."""
-        try:
-            # 1. Gather evidence
-            evidence = {
-                "analytics": self.client.get_analytics(brand_id),
-                "seo_data": self.client.get_seo_issues(brand_id),
-                "leads": self.client.get_pending_leads(brand_id),
-                "campaigns": self.client.get_campaigns(brand_id),
-            }
-            
-            # 2. Get pattern analysis
-            pattern = self.memory.analyze_patterns(opportunity, brand_id)
-            
-            # 3. Build the analysis prompt
-            analysis_prompt = f"""
-            Analyze this opportunity for brand {brand_id}:
-            
-            Opportunity: {json.dumps(opportunity, indent=2)}
-            Evidence: {json.dumps(evidence, indent=2)}
-            Pattern Analysis: {json.dumps(pattern, indent=2)}
-            
-            Based on the evidence and pattern analysis, decide if this should be autonomous.
-            Return a JSON response with:
-            - proposed_action: The action to take
-            - confidence: 0.0-1.0 score
-            - reasoning: Your reasoning
-            - estimated_impact: Dollar value
-            - autonomous: true/false
-            """
-            
-            # 4. Get AI reasoning
-            response = self.agent.invoke(analysis_prompt)
-            
-            # 5. Parse the response
-            decision = self._parse_decision(response)
-            
-            # 6. ✅ HARD SAFETY GATE
-            safety_result = self.safety.evaluate({
-                "action_name": decision.get("proposed_action", {}).get("name", "unknown"),
-                "brand_id": brand_id,
-                "estimated_impact": decision.get("estimated_impact", 0),
-                "confidence": decision.get("confidence", 0.0)
-            })
-            
-            # 7. Override with safety result
-            decision["autonomous"] = safety_result.get("autonomous", False)
-            decision["requires_approval"] = safety_result.get("requires_approval", True)
-            decision["safety_reason"] = safety_result.get("reason", "Safety policy applied")
-            
-            return {
-                "success": True,
-                "decision": decision,
-                "requires_approval": decision.get("requires_approval", True)
-            }
-            
-        except Exception as e:
-            logger.error(f"Execution with safety failed: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "requires_approval": True
-            }
+    async def reason(self, opportunity: Dict, evidence: Dict, context: Dict) -> Dict:
+        """
+        Reason about an opportunity and produce a decision.
+        This is the primary method that specialists implement.
+        """
+        # 1. Get similar experiences
+        pattern = self.memory.analyze_patterns(opportunity, context.get("brand_id"))
+        
+        # 2. Build the reasoning prompt
+        prompt = self._build_reasoning_prompt(opportunity, evidence, pattern, context)
+        
+        # 3. Get AI reasoning
+        response = await self._get_ai_reasoning(prompt)
+        
+        # 4. Parse and return decision
+        decision = self._parse_decision(response)
+        
+        # 5. Apply safety policy
+        safety_result = self.safety.evaluate({
+            "action_name": decision.get("action", {}).get("name", "unknown"),
+            "brand_id": context.get("brand_id"),
+            "confidence": decision.get("confidence", 0.0),
+            "estimated_impact": decision.get("estimated_impact", 0)
+        })
+        
+        decision["autonomous"] = safety_result.get("autonomous", False)
+        decision["requires_approval"] = safety_result.get("requires_approval", True)
+        decision["safety_reason"] = safety_result.get("reason", "Safety policy applied")
+        
+        return decision
     
-    def _parse_decision(self, response: Any) -> Dict[str, Any]:
-        """Parse the AI response."""
+    async def execute(self, decision: Dict, brand_id: int) -> Dict:
+        """
+        Execute a decision. This is called by the orchestrator after safety approval.
+        """
+        # Default implementation - can be overridden by specialists
+        return {
+            "success": True,
+            "message": f"Executed {decision.get('action', {}).get('name', 'unknown')}",
+            "result": decision
+        }
+    
+    def _build_reasoning_prompt(self, opportunity: Dict, evidence: Dict, pattern: Dict, context: Dict) -> str:
+        """Build the reasoning prompt for the AI."""
+        return f"""
+You are the {self.name}. Analyze this opportunity:
+
+Opportunity: {opportunity}
+Evidence: {evidence}
+Historical Pattern: {pattern}
+Context: {context}
+
+Based on this information, propose an action.
+Return a JSON with:
+- action: {name, target, payload}
+- confidence: 0.0-1.0
+- reasoning: your reasoning
+- estimated_impact: dollar value
+- autonomous: true/false (if you think it can be done without human approval)
+"""
+    
+    async def _get_ai_reasoning(self, prompt: str) -> str:
+        """Get AI reasoning. Subclasses can override for domain-specific prompting."""
+        # This would call the actual AI model
+        # For now, return a placeholder
+        return '{"action": {"name": "no_action_needed", "target": "none", "payload": {}}, "confidence": 0.0, "reasoning": "No action needed", "estimated_impact": 0, "autonomous": false}'
+    
+    def _parse_decision(self, response: str) -> Dict:
+        """Parse the AI response into a decision."""
+        import json
         try:
-            # Try to extract JSON from response
-            content = str(response)
-            # Find JSON block
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start != -1 and end != -1:
-                json_str = content[start:end]
-                return json.loads(json_str)
-            
-            # Fallback: parse from text
+            return json.loads(response)
+        except:
             return {
-                "proposed_action": {
-                    "name": "no_action_needed",
-                    "target": "none",
-                    "payload": {}
-                },
+                "action": {"name": "no_action_needed", "target": "none", "payload": {}},
                 "confidence": 0.0,
-                "reasoning": "Could not parse AI response, defaulting to no action",
-                "estimated_impact": 0,
-                "autonomous": False
-            }
-        except Exception as e:
-            logger.error(f"Failed to parse decision: {e}")
-            return {
-                "proposed_action": {
-                    "name": "no_action_needed",
-                    "target": "none",
-                    "payload": {}
-                },
-                "confidence": 0.0,
-                "reasoning": "Failed to parse response, defaulting to no action",
+                "reasoning": "Failed to parse response",
                 "estimated_impact": 0,
                 "autonomous": False
             }

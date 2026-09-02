@@ -3,6 +3,7 @@
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -110,19 +111,19 @@ class SafetyPolicy:
             }
         
         # Confidence check for actions that require reasoning
-        if policy.requires_reasoning and confidence < 0.4:
+        if policy.requires_reasoning and confidence < Config.AUTONOMOUS_THRESHOLD:
             return {
                 "allowed": False,
                 "autonomous": False,
                 "requires_approval": True,
-                "reason": f"Confidence {confidence:.2f} is too low (minimum 0.4 required).",
+                "reason": f"Confidence {confidence:.2f} below threshold {Config.AUTONOMOUS_THRESHOLD}.",
                 "risk_level": policy.risk_level
             }
         
         # Determine if autonomous execution is allowed
         is_autonomous = (
             policy.requires_approval is False and
-            confidence >= 0.8 and
+            confidence >= Config.AUTONOMOUS_THRESHOLD and
             policy.risk_level != "critical"
         )
         

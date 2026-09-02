@@ -1,6 +1,6 @@
 # src/utils/api_client.py
 
-import requests
+import httpx
 import logging
 from typing import Dict, Any, Optional, List
 from ..config import Config
@@ -8,49 +8,47 @@ from ..config import Config
 logger = logging.getLogger(__name__)
 
 class LaravelApiClient:
-    """Real API client for Vumbi Ventures Laravel backend."""
+    """Async API client for Vumbi Ventures Laravel backend."""
     
     def __init__(self, base_url: str = None, api_key: str = None):
-        # Strip whitespace from key
         self.api_key = (api_key or Config.LARAVEL_API_KEY).strip()
-        # Remove trailing slash from URL
         self.base_url = (base_url or Config.LARAVEL_API_URL).rstrip('/')
         self.headers = {
             "X-API-Key": self.api_key,
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
+        self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
     
-    def _request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
-        """Make a request to the Laravel API."""
+    async def _request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make an async request to the Laravel API."""
         url = f"{self.base_url}{endpoint}"
-        logger.debug(f"➡️ {method} {url}")
-        logger.debug(f"📋 Headers: {self.headers}")
         try:
-            response = self.session.request(method, url, json=data)
+            response = await self.client.request(method, url, json=data)
             response.raise_for_status()
             if not response.text:
                 return {"success": True}
             return response.json()
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPStatusError as e:
             logger.error(f"API request failed: {e}")
-            if hasattr(e, 'response') and e.response:
+            if e.response:
                 logger.error(f"Response body: {e.response.text}")
             raise
+    
+    async def close(self):
+        """Close the client session."""
+        await self.client.aclose()
+    
+    # ============ All methods become async ============
+    
+    async def get_opportunities(self, brand_id: int) -> List[Dict]:
+        return (await self._request("GET", f"/agent/opportunities/{brand_id}")).get("opportunities", [])
 
-    # ============ OPPORTUNITIES ============
+        
     
-    def get_opportunities(self, brand_id: int) -> List[Dict]:
-        """Fetch all opportunities for a brand."""
-        return self._request("GET", f"/agent/opportunities/{brand_id}").get("opportunities", [])
+    async def get_analytics(self, brand_id: int) -> Dict:
+        return await self._request("GET", f"/agent/analytics/{brand_id}")
     
-    # ============ ANALYTICS ============
-    
-    def get_analytics(self, brand_id: int) -> Dict:
-        """Fetch analytics data for a brand."""
-        return self._request("GET", f"/agent/analytics/{brand_id}")
     
     # ============ SEO ============
     
