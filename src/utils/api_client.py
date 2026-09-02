@@ -11,11 +11,14 @@ class LaravelApiClient:
     """Real API client for Vumbi Ventures Laravel backend."""
     
     def __init__(self, base_url: str = None, api_key: str = None):
-        self.base_url = base_url or Config.LARAVEL_API_URL
-        self.api_key = api_key or Config.LARAVEL_API_KEY
+        # Strip whitespace from key
+        self.api_key = (api_key or Config.LARAVEL_API_KEY).strip()
+        # Remove trailing slash from URL
+        self.base_url = (base_url or Config.LARAVEL_API_URL).rstrip('/')
         self.headers = {
             "X-API-Key": self.api_key,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
@@ -23,6 +26,8 @@ class LaravelApiClient:
     def _request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
         """Make a request to the Laravel API."""
         url = f"{self.base_url}{endpoint}"
+        logger.debug(f"➡️ {method} {url}")
+        logger.debug(f"📋 Headers: {self.headers}")
         try:
             response = self.session.request(method, url, json=data)
             response.raise_for_status()
@@ -31,10 +36,14 @@ class LaravelApiClient:
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed: {e}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Response body: {e.response.text}")
             raise
-    
+
     # ============ OPPORTUNITIES ============
+    
     def get_opportunities(self, brand_id: int) -> List[Dict]:
+        """Fetch all opportunities for a brand."""
         return self._request("GET", f"/agent/opportunities/{brand_id}").get("opportunities", [])
     
     # ============ ANALYTICS ============
@@ -52,14 +61,14 @@ class LaravelApiClient:
     def get_seo_issue(self, brand_id: int, issue_id: str) -> Dict:
         """Fetch a specific SEO issue."""
         return self._request("GET", f"/agent/seo/issue/{brand_id}/{issue_id}")
-
-    def get_seo_recommendations(self, brand_id: int, issue_id: str) -> List[Dict]:
-        """Fetch SEO recommendations for a specific issue."""
-        return self._request("GET", f"/agent/seo/recommendations/{brand_id}/{issue_id}").get("recommendations", [])
     
     def analyze_seo_issue(self, brand_id: int, issue_id: str) -> Dict:
         """Analyze an SEO issue and get recommendations."""
         return self._request("POST", f"/agent/seo/analyze/{brand_id}/{issue_id}")
+    
+    def get_seo_recommendations(self, brand_id: int, issue_id: str) -> Dict:
+        """Get SEO recommendations for a specific issue."""
+        return self._request("GET", f"/agent/seo/recommendations/{brand_id}/{issue_id}")
     
     def get_keyword_rankings(self, brand_id: int, page_url: str = None) -> Dict:
         """Get keyword rankings for a page or brand."""
@@ -81,6 +90,10 @@ class LaravelApiClient:
     def get_lead_engagement(self, brand_id: int, lead_id: str) -> Dict:
         """Fetch lead engagement data."""
         return self._request("GET", f"/agent/lead/engagement/{brand_id}/{lead_id}")
+    
+    def get_lead_context(self, brand_id: int, lead_id: str) -> Dict:
+        """Fetch lead context (notes, history, etc.)."""
+        return self._request("GET", f"/agent/lead/context/{brand_id}/{lead_id}")
     
     def generate_follow_up(self, brand_id: int, lead_id: str) -> Dict:
         """Generate a follow-up message for a lead."""
@@ -167,3 +180,12 @@ class LaravelApiClient:
         if params:
             endpoint += "?" + "&".join(params)
         return self._request("GET", endpoint)
+    
+    # ============ ROLLBACK ============
+    
+    def rollback_action(self, action_id: str, brand_id: int, action_name: str) -> Dict:
+        """Rollback an action via Laravel."""
+        return self._request("POST", f"/agent/rollback/{brand_id}", {
+            "action_id": action_id,
+            "action_name": action_name
+        })

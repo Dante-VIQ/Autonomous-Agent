@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, Any
 from .base import BaseSpecialist
-from ..tools.domain.lead import score_lead, suggest_follow_up
+from ..tools.domain.leads import score_lead, suggest_follow_up
 
 logger = logging.getLogger(__name__)
 
