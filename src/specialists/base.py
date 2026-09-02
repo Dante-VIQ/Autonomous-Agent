@@ -18,6 +18,7 @@ class BaseSpecialist:
     def __init__(self, name: str, domain: str, tools: List, system_prompt: str):
         self.name = name
         self.domain = domain
+        self.brand_id = None
         self.client = LaravelApiClient()
         self.safety = SafetyPolicy()
         self.memory = ExperienceMemory()
@@ -52,8 +53,11 @@ class BaseSpecialist:
         Reason about an opportunity and produce a decision.
         This is the primary method that specialists implement.
         """
+
+        brand_id = context.get("brand_id")
+        
         # 1. Get similar experiences
-        pattern = self.memory.analyze_patterns(opportunity, context.get("brand_id"))
+        pattern = await self.memory.analyze_patterns(opportunity, self.brand_id)
         
         # 2. Build the reasoning prompt
         prompt = self._build_reasoning_prompt(opportunity, evidence, pattern, context)
@@ -101,7 +105,7 @@ Context: {context}
 
 Based on this information, propose an action.
 Return a JSON with:
-- action: {name, target, payload}
+- action: {{name, target, payload}}
 - confidence: 0.0-1.0
 - reasoning: your reasoning
 - estimated_impact: dollar value

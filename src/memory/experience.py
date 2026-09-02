@@ -1,6 +1,5 @@
 # src/memory/experience.py
 
-import json
 import logging
 from typing import Dict, Any, List, Optional
 from ..utils.api_client import LaravelApiClient
@@ -13,10 +12,11 @@ class ExperienceMemory:
     def __init__(self):
         self.client = LaravelApiClient()
     
-    def find_similar(self, opportunity: Dict[str, Any], brand_id: int) -> List[Dict]:
+    async def find_similar(self, opportunity: Dict[str, Any], brand_id: int) -> List[Dict]:
         """Find similar experiences from real data."""
         try:
-            result = self.client.get_similar_experiences(
+            # ✅ Await the async call
+            result = await self.client.get_similar_experiences(
                 brand_id,
                 opportunity.get("type"),
                 opportunity.get("severity")
@@ -26,9 +26,10 @@ class ExperienceMemory:
             logger.warning(f"Failed to fetch similar experiences: {e}")
             return []
     
-    def analyze_patterns(self, opportunity: Dict[str, Any], brand_id: int) -> Dict[str, Any]:
+    async def analyze_patterns(self, opportunity: Dict[str, Any], brand_id: int) -> Dict[str, Any]:
         """Analyze patterns from similar experiences."""
-        experiences = self.find_similar(opportunity, brand_id)
+        # ✅ Await find_similar
+        experiences = await self.find_similar(opportunity, brand_id)
         
         if not experiences:
             return {
@@ -41,7 +42,7 @@ class ExperienceMemory:
                 "cautionary_notes": ["This is a new type of opportunity for this brand."]
             }
         
-        successful = [e for e in experiences if e.get("was_successful")]
+        successful = [e for e in experiences if e.get("was_successful", False)]
         success_rate = (len(successful) / len(experiences)) * 100 if experiences else 0
         avg_improvement = sum(e.get("improvement_percentage", 0) for e in successful) / len(successful) if successful else 0
         
@@ -76,10 +77,10 @@ class ExperienceMemory:
             "cautionary_notes": []
         }
     
-    def record(self, brand_id: int, data: Dict[str, Any]) -> Dict:
+    async def record(self, brand_id: int, data: Dict[str, Any]) -> Dict:
         """Record a new experience."""
         try:
-            result = self.client.record_learning(brand_id, data)
+            result = await self.client.record_learning(brand_id, data)
             logger.info(f"Recorded learning for brand {brand_id}")
             return result
         except Exception as e:

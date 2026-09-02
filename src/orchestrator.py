@@ -10,12 +10,14 @@ from .executor import Executor
 from .verifier import Verifier
 from .learner import Learner
 from .utils.api_client import LaravelApiClient
+from .memory.experience import ExperienceMemory
 
 logger = logging.getLogger(__name__)
 
 class Orchestrator:
     def __init__(self, brand_id: int):
         self.brand_id = brand_id
+        self.context = {"brand_id": brand_id}  
         self.specialists = {
             "seo_issue": SeoSpecialist(),
             "leads_pending": LeadSpecialist(),
@@ -27,6 +29,7 @@ class Orchestrator:
         self.learner = Learner()
         self.client = LaravelApiClient()
         self.context = {}
+        self.memory = ExperienceMemory()
 
     async def run_cycle(self) -> Dict[str, Any]:
         """Run a full cycle: monitor → process → learn."""
@@ -78,6 +81,8 @@ class Orchestrator:
         # Reason (specialist.reason is async)
         decision = await specialist.reason(opportunity, evidence, self.context)
         
+        pattern = await self.memory.analyze_patterns(opportunity, self.brand_id)
+
         # Safety policy
         safety_result = self.safety.evaluate({
             "action_name": decision.get("action", {}).get("name", "unknown"),
