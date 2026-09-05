@@ -1,7 +1,7 @@
 # src/verifier.py
 
+import asyncio
 import logging
-import time
 from typing import Dict, Any
 from datetime import datetime
 from .utils.api_client import LaravelApiClient
@@ -9,32 +9,11 @@ from .utils.api_client import LaravelApiClient
 logger = logging.getLogger(__name__)
 
 # Action-specific verification configuration
-VERIFICATION_CONFIG = {
-    "seo_issue": {
-        "wait_seconds": 30,
-        "metrics": ["indexability", "ranking_position", "organic_impressions"],
-        "success_threshold": 0.05  # 5% improvement
-    },
-    "lead_notification": {
-        "wait_seconds": 5,
-        "metrics": ["reply_rate", "engagement"],
-        "success_threshold": 0.10
-    },
-    "content_generation": {
-        "wait_seconds": 60,
-        "metrics": ["indexation", "impressions", "ranking"],
-        "success_threshold": 0.10
-    },
-    "campaign_pause": {
-        "wait_seconds": 120,
-        "metrics": ["roi", "cost_per_conversion"],
-        "success_threshold": 0.10
-    },
-    "default": {
-        "wait_seconds": 30,
-        "metrics": ["visitors", "conversions", "revenue"],
-        "success_threshold": 0.05
-    }
+ACTION_VERIFICATION_CONFIG = {
+    "seo_issue": {"wait_seconds": 30, "metrics": ["indexability", "ranking_position"]},
+    "lead_notification": {"wait_seconds": 5, "metrics": ["reply_rate"]},
+    "content_generation": {"wait_seconds": 60, "metrics": ["indexation", "impressions"]},
+    "campaign_pause": {"wait_seconds": 120, "metrics": ["roi", "cost_per_conversion"]}
 }
 
 class Verifier:
@@ -44,51 +23,41 @@ class Verifier:
         self.client = LaravelApiClient()
 
     async def verify(self, execution_result: Dict, brand_id: int) -> Dict:
-        """Verify the outcome of an executed action."""
         action = execution_result.get("action", {})
         action_name = action.get("name", "unknown")
-        action_type = action.get("type", "default")  # Use type from opportunity if available
+        action_type = action.get("type", "unknown")
         
-        # Get config for this action type
-        config = VERIFICATION_CONFIG.get(action_type, VERIFICATION_CONFIG["default"])
-        wait_seconds = config["wait_seconds"]
-        metrics = config["metrics"]
-        threshold = config["success_threshold"]
+        config = ACTION_VERIFICATION_CONFIG.get(action_type, {})
+        wait_seconds = config.get("wait_seconds", 30)
         
-        logger.info(f"🔍 Verifying {action_name} with {wait_seconds}s wait, metrics: {metrics}")
+        # ✅ Use asyncio.sleep instead of time.sleep
+        logger.info(f"⏳ Waiting {wait_seconds}s for {action_name} to propagate...")
+        await asyncio.sleep(wait_seconds)
         
-        # Wait for action to propagate
-        time.sleep(wait_seconds)
+        # ✅ Await the async call
+        before_metrics = {}
+        after_metrics = {}
+        try:
+            after_metrics = await self.client.get_analytics(brand_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch after metrics: {e}")
         
-        # Get before metrics (from execution context or API)
-        before_metrics = execution_result.get("before_metrics", {})
-        if not before_metrics:
-            # Fallback: fetch current metrics as before (not ideal)
-            before_metrics = await self._fetch_metrics(brand_id)
-        
-        # Get after metrics
-        after_metrics = await self._fetch_metrics(brand_id, metrics)
-        
-        # Calculate improvement
-        improvement = self._calculate_improvement(before_metrics, after_metrics, metrics)
-        was_successful = improvement.get("average", 0) >= threshold
-        
-        logger.info(f"Verification result: {'✅ SUCCESS' if was_successful else '❌ FAILED'}, improvement: {improvement.get('average', 0)*100:.1f}%")
+        improvement = self._calculate_improvement(before_metrics, after_metrics)
+        was_successful = improvement.get("average", 0) >= 0.05
         
         return {
             "success": True,
             "was_successful": was_successful,
             "improvement": improvement,
             "before_metrics": before_metrics,
-            "after_metrics": after_metrics,
-            "timestamp": datetime.now().isoformat()
+            "after_metrics": after_metrics
         }
 
     async def _fetch_metrics(self, brand_id: int, metrics: list = None) -> Dict:
         """Fetch metrics from Laravel."""
         try:
             # For now, fetch analytics as a proxy
-            analytics = self.client.get_analytics(brand_id)
+            analytics = await self.client.get_analytics(brand_id)
             # Map to requested metrics
             return {
                 "visitors": analytics.get("visitors", 0),

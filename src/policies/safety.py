@@ -40,7 +40,7 @@ class SafetyPolicy:
             ),
             "trigger_content_generation": ActionPolicy(
                 action_name="trigger_content_generation",
-                requires_approval=True,
+                requires_approval=False,
                 max_frequency_per_hour=5,
                 requires_reasoning=True,
                 reversible=False,

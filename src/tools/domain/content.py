@@ -9,7 +9,7 @@ from ...utils.api_client import LaravelApiClient
 logger = logging.getLogger(__name__)
 
 @tool
-def analyze_content_gap(topic: str, brand_id: int) -> str:
+async def analyze_content_gap(topic: str, brand_id: int) -> str:
     """
     Identify content gaps based on SEO and competition.
     Uses REAL data from Vumbi Ventures Laravel backend.
@@ -17,7 +17,7 @@ def analyze_content_gap(topic: str, brand_id: int) -> str:
     client = LaravelApiClient()
     
     try:
-        analysis = client.analyze_content_gap(brand_id, topic)
+        analysis = await client.analyze_content_gap(brand_id, topic)
         
         return json.dumps({
             "success": True,

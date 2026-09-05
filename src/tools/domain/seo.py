@@ -9,7 +9,7 @@ from ...utils.api_client import LaravelApiClient
 logger = logging.getLogger(__name__)
 
 @tool
-def analyze_seo_issue(issue_id: str, brand_id: int) -> str:
+async def analyze_seo_issue(issue_id: str, brand_id: int) -> str:
     """
     Deep-dive into a specific SEO issue and suggest a remediation.
     Uses REAL data from Vumbi Ventures Laravel backend.
@@ -17,9 +17,11 @@ def analyze_seo_issue(issue_id: str, brand_id: int) -> str:
     client = LaravelApiClient()
     
     try:
-        issue = client.get_seo_issue(brand_id, issue_id)
         analysis = client.analyze_seo_issue(brand_id, issue_id)
         recommendations = client.get_seo_recommendations(brand_id, issue_id)
+        issue = await client.get_seo_issue(brand_id, issue_id)
+        analysis = await client.analyze_seo_issue(brand_id, issue_id)
+        recommendations = await client.get_seo_recommendations(brand_id, issue_id)
         
         return json.dumps({
             "success": True,

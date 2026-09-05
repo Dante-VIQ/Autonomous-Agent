@@ -1,8 +1,9 @@
 # src/orchestrator.py
 
+import asyncio  # ✅ ADD THIS
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from .tools.monitor import monitor_opportunities
 from .specialists import SeoSpecialist, LeadSpecialist, ContentSpecialist
 from .policies.safety import SafetyPolicy
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     def __init__(self, brand_id: int):
         self.brand_id = brand_id
-        self.context = {"brand_id": brand_id}  
+        self.context = {"brand_id": brand_id}
         self.specialists = {
             "seo_issue": SeoSpecialist(),
             "leads_pending": LeadSpecialist(),
@@ -28,24 +29,40 @@ class Orchestrator:
         self.verifier = Verifier()
         self.learner = Learner()
         self.client = LaravelApiClient()
-        self.context = {}
         self.memory = ExperienceMemory()
+        self._evidence_cache = None
 
     async def run_cycle(self) -> Dict[str, Any]:
-        """Run a full cycle: monitor → process → learn."""
-        logger.info(f"🔄 Starting cycle for brand {self.brand_id}")
+        logger.info("━" * 50)
+        logger.info(f"🔄 AGENT CYCLE — Brand {self.brand_id}")
+        logger.info("━" * 50)
+        
         try:
-            # 1. Monitor
+            # 1. DISCOVERY
+            logger.info("📡 DISCOVERY")
             opportunities = await self._monitor()
             if not opportunities:
                 logger.info("No opportunities found, skipping cycle.")
                 return {"status": "idle", "message": "No opportunities found"}
             
-            # 2. Process each opportunity
+            # 2. EVIDENCE (cached once per cycle)
+            logger.info("📊 EVIDENCE")
+            evidence = await self._gather_evidence_snapshot()
+            self._evidence_cache = evidence
+            logger.info(f"   ✅ Evidence snapshot cached ({len(evidence)} items)")
+            
+            # 3. PROCESS OPPORTUNITIES
+            logger.info(f"⚙️ PROCESSING {len(opportunities)} OPPORTUNITIES")
             results = []
-            for opp in opportunities:
-                result = await self._process_opportunity(opp)
+            for i, opp in enumerate(opportunities):
+                logger.info(f"   → Opportunity #{i+1}: {opp.get('type')} - {opp.get('title', 'Untitled')}")
+                result = await self._process_opportunity(opp, evidence)
                 results.append(result)
+            
+            logger.info("━" * 50)
+            logger.info("✅ CYCLE COMPLETE")
+            logger.info(f"   Processed: {len(results)} opportunities")
+            logger.info("━" * 50)
             
             return {
                 "status": "completed",
@@ -56,33 +73,47 @@ class Orchestrator:
             logger.error(f"❌ Cycle failed: {e}")
             return {"status": "failed", "error": str(e)}
 
-    async def _monitor(self) -> List[Dict]:
-        """Monitor for opportunities – async call."""
-        result_str = await monitor_opportunities(self.brand_id)
+    async def _gather_evidence_snapshot(self) -> Dict:
+        """Gather all evidence once per cycle."""
         try:
-            data = json.loads(result_str)
-            opportunities = data.get("opportunities", [])
-            logger.info(f"Found {len(opportunities)} opportunities")
-            return opportunities
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse monitor response: {e}")
-            return []
+            analytics, seo_issues, leads, campaigns = await asyncio.gather(
+                self.client.get_analytics(self.brand_id),
+                self.client.get_seo_issues(self.brand_id),
+                self.client.get_pending_leads(self.brand_id),
+                self.client.get_campaigns(self.brand_id),
+                return_exceptions=True
+            )
+            
+            evidence = {
+                "analytics": analytics if not isinstance(analytics, Exception) else {},
+                "seo_issues": seo_issues if not isinstance(seo_issues, Exception) else [],
+                "leads": leads if not isinstance(leads, Exception) else [],
+                "campaigns": campaigns if not isinstance(campaigns, Exception) else [],
+            }
+            
+            logger.info(f"   ✅ Analytics: {len(evidence['analytics']) if evidence['analytics'] else 0}")
+            logger.info(f"   ✅ SEO issues: {len(evidence['seo_issues'])}")
+            logger.info(f"   ✅ Leads: {len(evidence['leads'])}")
+            logger.info(f"   ✅ Campaigns: {len(evidence['campaigns'])}")
+            
+            return evidence
+        except Exception as e:
+            logger.error(f"Failed to gather evidence snapshot: {e}")
+            return {}
 
-    async def _process_opportunity(self, opportunity: Dict) -> Dict:
-        """Process a single opportunity through the pipeline."""
+    async def _process_opportunity(self, opportunity: Dict, evidence: Dict) -> Dict:
         opp_type = opportunity.get("type")
         specialist = self.specialists.get(opp_type)
         if not specialist:
             return {"success": False, "message": f"No specialist for {opp_type}"}
         
-        # Gather evidence
-        evidence = await self._gather_evidence(opportunity)
+        # Get pattern analysis
+        pattern = await self.memory.analyze_patterns(opportunity, self.brand_id)
+        self.context["pattern"] = pattern
         
-        # Reason (specialist.reason is async)
+        # Reason
         decision = await specialist.reason(opportunity, evidence, self.context)
         
-        pattern = await self.memory.analyze_patterns(opportunity, self.brand_id)
-
         # Safety policy
         safety_result = self.safety.evaluate({
             "action_name": decision.get("action", {}).get("name", "unknown"),
@@ -120,20 +151,13 @@ class Orchestrator:
             "verification": verification_result
         }
 
-    async def _gather_evidence(self, opportunity: Dict) -> Dict:
-        """Gather evidence for a decision (e.g., analytics, SEO data)."""
-        # For now, fetch analytics and SEO issues as evidence
+    async def _monitor(self) -> List[Dict]:
+        result_str = await monitor_opportunities(self.brand_id)
         try:
-            analytics = await self.client.get_analytics(self.brand_id)
-            seo_issues = await self.client.get_seo_issues(self.brand_id)
-            leads = await self.client.get_pending_leads(self.brand_id)
-            campaigns = await self.client.get_campaigns(self.brand_id)
-            return {
-                "analytics": analytics,
-                "seo_issues": seo_issues,
-                "leads": leads,
-                "campaigns": campaigns
-            }
-        except Exception as e:
-            logger.warning(f"Failed to gather some evidence: {e}")
-            return {"error": str(e)}
+            data = json.loads(result_str)
+            opportunities = data.get("opportunities", [])
+            logger.info(f"   ✅ Found {len(opportunities)} opportunities")
+            return opportunities
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse monitor response: {e}")
+            return []

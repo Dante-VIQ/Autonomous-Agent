@@ -142,8 +142,9 @@ class LaravelApiClient:
             endpoint += "?" + "&".join(params)
         return await self._request("GET", endpoint)
     
-    async def rollback_action(self, action_id: str, brand_id: int, action_name: str) -> Dict:
-        return await self._request("POST", f"/agent/rollback/{brand_id}", {
-            "action_id": action_id,
-            "action_name": action_name
-        })
+async def rollback_action(self, action_id: str, brand_id: int, action_name: str) -> Dict:
+    return await self._request("POST", f"/agent/rollback/log", {
+        "action_id": action_id,
+        "action_name": action_name,
+        "brand_id": brand_id
+    })

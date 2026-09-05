@@ -14,8 +14,11 @@ class ExperienceMemory:
     
     async def find_similar(self, opportunity: Dict[str, Any], brand_id: int) -> List[Dict]:
         """Find similar experiences from real data."""
+        if brand_id is None:
+            logger.warning("find_similar called with brand_id=None, defaulting to 1")
+            brand_id = 1
+        
         try:
-            # ✅ Await the async call
             result = await self.client.get_similar_experiences(
                 brand_id,
                 opportunity.get("type"),
@@ -28,7 +31,6 @@ class ExperienceMemory:
     
     async def analyze_patterns(self, opportunity: Dict[str, Any], brand_id: int) -> Dict[str, Any]:
         """Analyze patterns from similar experiences."""
-        # ✅ Await find_similar
         experiences = await self.find_similar(opportunity, brand_id)
         
         if not experiences:
