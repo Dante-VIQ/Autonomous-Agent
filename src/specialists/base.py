@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -124,66 +125,74 @@ confidence (0.0-1.0), your reasoning, and the estimated dollar impact.
 - resolve_seo_issue           (for fixing SEO problems)
 - notify_lead_response        (for following up with leads)
 - pause_campaign              (for pausing underperforming campaigns)
+- adjust_campaign             (for adjusting campaign settings)
 - no_action_needed            (if no action is needed)
 
 Return a JSON object with: action {{name, target, payload}}, confidence, reasoning, estimated_impact.
 """
 
-async def _get_ai_reasoning(self, prompt: str) -> str:
-    last_error: Optional[Exception] = None
+    async def _get_ai_reasoning(self, prompt: str) -> str:
+        last_error = None
 
-    if self.agent:
+        if self.agent:
+            try:
+                decision = await self.agent.structured_output_async(
+                    output_model=_DecisionSchema,
+                    prompt=prompt,
+                )
+                return self._decision_to_json(decision)
+            except Exception as e:
+                last_error = e
+                if "EOF" in str(e) or "Invalid JSON" in str(e):
+                    logger.warning(f"Structured output returned empty/EOF for {self.name}, falling back to regular generation")
+                else:
+                    logger.warning(f"Primary model failed for {self.name}: {e}")
+
+        if self.fallback_agent:
+            try:
+                decision = await self.fallback_agent.structured_output_async(
+                    output_model=_DecisionSchema,
+                    prompt=prompt,
+                )
+                return self._decision_to_json(decision)
+            except Exception as e:
+                last_error = e
+                logger.error(f"Fallback model also failed for {self.name}: {e}")
+
+        # Fallback: regular generation + JSON extraction
         try:
-            decision = await self.agent.structured_output_async(
-                output_model=_DecisionSchema,
-                prompt=prompt,
-            )
-            return self._decision_to_json(decision)
+            model_to_use = self.model or self.fallback_model
+            if not model_to_use:
+                raise ValueError("No model available")
+            response = await model_to_use.generate(prompt)
+            content = response.get("content", "") if isinstance(response, dict) else str(response)
+            if not content or content.strip() == "":
+                raise ValueError("Empty response from model")
+            return self._extract_json_from_response(content)
         except Exception as e:
-            last_error = e
-            # ✅ Check if the error is due to empty response
-            if "EOF" in str(e) or "Invalid JSON" in str(e):
-                logger.warning(f"Ollama returned empty response for {self.name}, falling back")
-                # Continue to fallback
-            else:
-                logger.warning(f"Primary model failed for {self.name}: {e}")
+            logger.error(f"All AI methods failed for {self.name}: {last_error}")
+            return self._get_fallback_decision()
 
-    # If we reached here, structured output failed — use regular generation
-    try:
-        # Use the model's generate method directly (not structured)
-        response = await self.model.generate(prompt)
-        content = response.get("content", "") if isinstance(response, dict) else str(response)
-        if not content or content.strip() == "":
-            raise ValueError("Empty response from model")
-        # Try to parse JSON from the response
-        return self._extract_json_from_response(content)
-    except Exception as e:
-        logger.error(f"All AI methods failed for {self.name}: {e}")
-        return self._get_fallback_decision()
+    def _extract_json_from_response(self, content: str) -> str:
+        """Extract JSON from a free-text response."""
+        # Try to find a JSON object
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            try:
+                json.loads(json_str)
+                return json_str
+            except json.JSONDecodeError:
+                pass
 
+        # Fallback: return a default decision
+        return json.dumps({
+            "action": {"name": "no_action_needed", "target": "none", "payload": {}},
+            "confidence": 0.0,
+            "reasoning": "Could not extract valid JSON from model response",
+            "estimated_impact": 0,
+        })
 
-        def _extract_json_from_response(self, content: str) -> str:
-    """Extract JSON from a free-text response."""
-    import re
-    # Try to find a JSON object in the response
-    match = re.search(r'\{.*\}', content, re.DOTALL)
-    if match:
-        json_str = match.group(0)
-        # Validate it's valid JSON
-        try:
-            json.loads(json_str)
-            return json_str
-        except:
-            pass
-    # Fallback: return a default decision
-    return json.dumps({
-        "action": {"name": "no_action_needed", "target": "none", "payload": {}},
-        "confidence": 0.0,
-        "reasoning": "Could not extract valid JSON from model response",
-        "estimated_impact": 0,
-    })
-
-    
     @staticmethod
     def _decision_to_json(decision: "_DecisionSchema") -> str:
         try:
@@ -213,5 +222,13 @@ async def _get_ai_reasoning(self, prompt: str) -> str:
                 "confidence": 0.0,
                 "reasoning": "Failed to parse response",
                 "estimated_impact": 0,
-                "autonomous": False
+                "autonomous": False,
             }
+
+    def _get_fallback_decision(self) -> str:
+        return json.dumps({
+            "action": {"name": "no_action_needed", "target": "none", "payload": {}},
+            "confidence": 0.0,
+            "reasoning": "AI reasoning failed, fallback to no action",
+            "estimated_impact": 0,
+        })

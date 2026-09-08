@@ -8,8 +8,6 @@ from ..tools.domain.analytics import analyze_conversions, get_analytics_summary
 logger = logging.getLogger(__name__)
 
 class AnalyticsSpecialist(BaseSpecialist):
-    """Analytics Specialist for handling conversion and performance alerts."""
-
     def __init__(self):
         tools = [
             analyze_conversions,
@@ -33,11 +31,10 @@ When analyzing an analytics alert (e.g., low conversions), you should:
         super().__init__("Analytics Specialist", "analytics", tools, system_prompt)
 
     async def execute(self, decision: Dict, brand_id: int) -> Dict:
-        """Execute an analytics decision."""
         action = decision.get("action", {})
         action_name = action.get("name", "unknown")
 
-        if action_name == "pause_campaign" or action_name == "adjust_campaign":
+        if action_name in ("pause_campaign", "adjust_campaign"):
             payload = action.get("payload", {})
             result = await self.client.pause_campaign(
                 brand_id,
