@@ -1,11 +1,11 @@
 # src/orchestrator.py
 
-import asyncio  # ✅ ADD THIS
+import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional
 from .tools.monitor import monitor_opportunities
-from .specialists import SeoSpecialist, LeadSpecialist, ContentSpecialist
+from .specialists import SeoSpecialist, LeadSpecialist, ContentSpecialist, AnalyticsSpecialist
 from .policies.safety import SafetyPolicy
 from .executor import Executor
 from .verifier import Verifier
@@ -23,6 +23,7 @@ class Orchestrator:
             "seo_issue": SeoSpecialist(),
             "leads_pending": LeadSpecialist(),
             "content_generation": ContentSpecialist(),
+            "analytics_alert": AnalyticsSpecialist(),
         }
         self.safety = SafetyPolicy()
         self.executor = Executor()
@@ -105,15 +106,15 @@ class Orchestrator:
         opp_type = opportunity.get("type")
         specialist = self.specialists.get(opp_type)
         if not specialist:
+            logger.warning(f"⏭️ No specialist for opportunity type '{opp_type}', skipping")
             return {"success": False, "message": f"No specialist for {opp_type}"}
-        
-        # Get pattern analysis
-        pattern = await self.memory.analyze_patterns(opportunity, self.brand_id)
-        self.context["pattern"] = pattern
-        
-        # Reason
+
+        # Reason (specialist.reason is async). This already calls
+        # self.memory.analyze_patterns() internally, so don't call it again.
+        # `evidence` is the once-per-cycle snapshot passed in from run_cycle
+        # — not re-fetched here.
         decision = await specialist.reason(opportunity, evidence, self.context)
-        
+
         # Safety policy
         safety_result = self.safety.evaluate({
             "action_name": decision.get("action", {}).get("name", "unknown"),
@@ -121,7 +122,7 @@ class Orchestrator:
             "confidence": decision.get("confidence", 0.0),
             "estimated_impact": decision.get("estimated_impact", 0)
         })
-        
+
         # Execute or approve
         if safety_result.get("autonomous", False):
             execution_result = await self.executor.execute(decision, self.brand_id)
@@ -131,18 +132,18 @@ class Orchestrator:
                 "message": "Action requires human review",
                 "decision": decision
             }
-        
+
         # Verify if executed
         verification_result = None
         if execution_result.get("status") == "executed":
             verification_result = await self.verifier.verify(execution_result, self.brand_id)
-        
+
         # Learn
         if verification_result:
             await self.learner.record(
                 opportunity, decision, execution_result, verification_result, self.brand_id
             )
-        
+
         return {
             "opportunity": opportunity,
             "decision": decision,

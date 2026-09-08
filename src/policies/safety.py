@@ -69,6 +69,20 @@ class SafetyPolicy:
                 reversible=True,
                 risk_level="low"
             ),
+                "create_blog_post": ActionPolicy(
+        action_name="create_blog_post",
+        requires_approval=False,
+        requires_reasoning=True,
+        reversible=False,
+        risk_level="medium"
+    ),
+    "generate_content": ActionPolicy(
+        action_name="generate_content",
+        requires_approval=False,
+        requires_reasoning=True,
+        reversible=False,
+        risk_level="medium"
+    ),
         }
     
     def evaluate(self, request: Dict[str, Any]) -> Dict[str, Any]:

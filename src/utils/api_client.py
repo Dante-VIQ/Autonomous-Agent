@@ -18,7 +18,7 @@ class LaravelApiClient:
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
+        self.client = httpx.AsyncClient(headers=self.headers, timeout=300.0)
     
     async def _request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
         """Make an async request to the Laravel API."""
