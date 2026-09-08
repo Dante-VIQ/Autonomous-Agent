@@ -5,7 +5,7 @@
 [![Powered by Gemini](https://img.shields.io/badge/Powered%20by-Gemini-blue)](https://deepmind.google/technologies/gemini/)
 [![Hackathon](https://img.shields.io/badge/Agents%20for%20Humans-2026-ff6b6b)](https://agentsforhumans.devpost.com)
 
-> An autonomous, multi-agent marketing system that monitors opportunities, makes decisions, executes actions, verifies outcomes, and learns — freeing solo founders from busywork.
+> An autonomous, multi‑agent marketing system that monitors opportunities, makes decisions, executes actions, verifies outcomes, and learns — freeing solo founders from busywork.
 
 ---
 
@@ -27,7 +27,7 @@ These tasks are highly judgment-heavy, time-consuming, and drain creative energy
 
 ## 💡 The Solution
 
-**Vumbi AI** is a hierarchical multi-agent system that handles marketing busywork autonomously. It is composed of:
+**Vumbi AI** is a hierarchical multi‑agent system written in Python that handles marketing busywork autonomously. It is composed of:
 
 - 🧠 **Supervisor Agent** — orchestrates the workflow and delegates tasks
 - 🎯 **Specialist Agents** — SEO, Lead, and Content specialists with domain expertise
@@ -57,12 +57,14 @@ flowchart TB
             D --> SEO[SEO Specialist<br/>Strands Agent]
             D --> LEAD[Lead Specialist<br/>Strands Agent]
             D --> CONTENT[Content Specialist<br/>Strands Agent]
+            D --> ANALYTICS[Analytics Specialist<br/>Strands Agent]
         end
 
         subgraph "Core Intelligence"
             SEO --> ID[IntelligentDecisionTool]
             LEAD --> ID
             CONTENT --> ID
+            ANALYTICS --> ID
             ID --> GEM[GeminiReasoningService]
             ID --> MEM[ExperienceMemory]
             ID --> SAF[SafetyPolicy]
@@ -95,7 +97,7 @@ flowchart TB
     classDef human fill:#F44336,color:white,stroke:#B71C1C
 
     class S,M,D supervisor
-    class SEO,LEAD,CONTENT specialist
+    class SEO,LEAD,CONTENT,ANALYTICS specialist
     class ID,GEM,MEM,SAF,EXEC,VERIFY,LEARN,ROLLBACK core
     class API,DB backend
     class REVIEW human
@@ -121,7 +123,7 @@ flowchart TB
 
 ### Prerequisites
 
-- Node.js 20+
+- Python 3.10+
 - PHP 8.2+ for the Laravel backend
 - Google Gemini API key ([Get one here](https://aistudio.google.com/app/apikey))
 - MySQL 8.0+
@@ -129,22 +131,28 @@ flowchart TB
 ### 1) Clone the Repository
 
 ```bash
-git clone https://github.com/Dante-VIQ/strands-agent.git
-cd strands-agent
+git clone https://github.com/Dante-VIQ/Autonomous-Agent.git
+cd Autonomous-Agent
 ```
 
-### 2) Install Dependencies
+### 2) Create and Activate a Virtual Environment
 
 ```bash
-npm install --legacy-peer-deps
+python -m venv venv
+source venv/bin/activate   # On Windows: venv\Scripts\activate
 ```
 
-### 3) Configure Environment
+### 3) Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4) Configure Environment
 
 ```bash
 cp .env.example .env
 ```
-
 Then update `.env` with values similar to:
 
 ```env
@@ -155,18 +163,19 @@ LARAVEL_API_KEY=your_api_key_here
 BRAND_ID=1
 AGENT_INTERVAL=900
 ```
+If you prefer to use Ollama locally, set OLLAMA_HOST and OLLAMA_MODEL in .env.
 
-### 4) Run the Agent
+### 5) Run The Agent
 
 ```bash
-npm run build
-npm start
+python run.py
 ```
+This starts the agent loop, which will monitor and act on opportunities every AGENT_INTERVAL seconds.
 
-### 5) Development Mode
+### 6) Development Mode
 
 ```bash
-npm run dev
+python run.py --once   # run a single cycle and exit
 ```
 
 ---
@@ -192,44 +201,50 @@ npm run dev
 ## 📁 Project Structure
 
 ```text
-strands-agent/
+Autonomous-Agent/
 ├── src/
-│   ├── agent.ts                     # Main agent exports
-│   ├── index.ts                     # Entry point with scheduler
-│   ├── agent/
-│   │   ├── SupervisorAgent.ts       # Supervisor Strands agent
-│   │   ├── specialists/
-│   │   │   ├── BaseSpecialist.ts    # Abstract specialist base class
-│   │   │   ├── SeoSpecialist.ts     # SEO specialist
-│   │   │   ├── LeadSpecialist.ts    # Lead specialist
-│   │   │   └── ContentSpecialist.ts # Content specialist
-│   │   ├── tools/
-│   │   │   ├── IntelligentDecisionTool.ts
-│   │   │   ├── ExecuteTool.ts
-│   │   │   ├── VerifyTool.ts
-│   │   │   ├── LearnTool.ts
-│   │   │   └── MonitorTool.ts
-│   │   ├── policies/
-│   │   │   └── SafetyPolicy.ts
-│   │   ├── memory/
-│   │   │   └── ExperienceMemory.ts
-│   │   ├── rollback/
-│   │   │   └── RollbackEngine.ts
-│   │   └── context/
-│   │       └── TenantContext.ts
-│   ├── services/
-│   │   ├── LaravelApiService.ts
-│   │   ├── GeminiReasoningService.ts
-│   │   ├── ObservabilityService.ts
-│   │   └── HealthCheckService.ts
-│   └── types/
-│       └── index.ts
+│   ├── __init__.py
+│   ├── main.py                     # Entry point
+│   ├── config.py                   # Environment config
+│   ├── orchestrator.py             # Core orchestrator
+│   ├── executor.py                 # Action executor with retry
+│   ├── verifier.py                 # Action‑specific verification
+│   ├── learner.py                  # Learning with real storage
+│   ├── specialists/
+│   │   ├── __init__.py
+│   │   ├── base.py                 # BaseSpecialist with reason()
+│   │   ├── seo.py                  # SEO specialist
+│   │   ├── leads.py                # Lead specialist
+│   │   ├── content.py              # Content specialist
+│   │   └── analytics.py            # Analytics specialist
+│   ├── policies/
+│   │   ├── __init__.py
+│   │   └── safety.py               # SafetyPolicy
+│   ├── memory/
+│   │   ├── __init__.py
+│   │   └── experience.py           # ExperienceMemory
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── monitor.py              # monitor_opportunities
+│   │   └── domain/
+│   │       ├── __init__.py
+│   │       ├── seo.py
+│   │       ├── leads.py
+│   │       ├── content.py
+│   │       └── analytics.py
+│   └── utils/
+│       ├── __init__.py
+│       ├── api_client.py           # Async Laravel client
+│       └── logger.py               # Logging setup
+├── tests/
+│   ├── __init__.py
+│   ├── test_api_client.py
+│   └── ...
 ├── .env.example
-├── package.json
-├── tsconfig.json
+├── requirements.txt
+├── pyproject.toml
 ├── README.md
-└── docker/
-    └── Dockerfile
+└── run.py
 ```
 
 ---
@@ -247,13 +262,13 @@ strands-agent/
 ## 🧪 Testing
 
 ```bash
-# Build
-npm run build
+# Run all tests
+pytest
 
-# Run a single cycle
-node -e "import('./dist/index.js').then(m => m.runCycle())"
+# Run a single cycle manually
+python run.py --once
 
-# Health check
+# Health check (if Laravel backend is running)
 curl http://localhost:8000/api/agent/health
 ```
 
@@ -286,5 +301,5 @@ This project is licensed under the MIT License. See the LICENSE file for full de
 
 ## 📬 Contact
 
-- Project: https://github.com/Dante-VIQ/strands-agent
+- Project: https://github.com/Dante-VIQ/Autonomous-Agent
 - Hackathon: Agents for Humans 2026
