@@ -83,6 +83,14 @@ class SafetyPolicy:
         reversible=False,
         risk_level="medium"
     ),
+    "adjust_campaign": ActionPolicy(
+    action_name="adjust_campaign",
+    requires_approval=True,   # or False if you trust it
+    max_frequency_per_hour=3,
+    requires_reasoning=True,
+    reversible=True,
+    risk_level="high"
+),
         }
     
     def evaluate(self, request: Dict[str, Any]) -> Dict[str, Any]:

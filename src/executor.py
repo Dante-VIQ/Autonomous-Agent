@@ -27,7 +27,7 @@ class Executor:
                 "duration": 0
             }
         except Exception as e:
-            logger.error(f"❌ Execution failed: {e}")
+            logger.error(f"❌ Execution failed: {e}", exc_info=True)
             return {
                 "status": "failed",
                 "action": action,
@@ -44,6 +44,7 @@ class Executor:
             "generate_content": self.client.generate_content,    # Added alias
             "notify_lead_response": self.client.generate_follow_up,
             "pause_campaign": self.client.pause_campaign,
+            "adjust_campaign": self.client.pause_campaign,
         }
         func = action_map.get(name)
         if not func:
@@ -82,5 +83,5 @@ class Executor:
             )
             return {"success": True, "result": result}
         except Exception as e:
-            logger.error(f"Rollback failed: {e}")
+            logger.error(f"Rollback failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
