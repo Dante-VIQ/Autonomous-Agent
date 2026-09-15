@@ -3,7 +3,8 @@
 import asyncio
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
+
 from .tools.monitor import monitor_opportunities
 from .specialists import SeoSpecialist, LeadSpecialist, ContentSpecialist, AnalyticsSpecialist
 from .policies.safety import SafetyPolicy
@@ -14,6 +15,7 @@ from .utils.api_client import LaravelApiClient
 from .memory.experience import ExperienceMemory
 
 logger = logging.getLogger(__name__)
+
 
 class Orchestrator:
     def __init__(self, brand_id: int):
@@ -34,9 +36,11 @@ class Orchestrator:
         self._evidence_cache = None
 
     async def run_cycle(self) -> Dict[str, Any]:
+        """Run a full agent cycle: freshness → discovery → evidence → process."""
         logger.info("━" * 50)
         logger.info(f"🔄 AGENT CYCLE — Brand {self.brand_id}")
         logger.info("━" * 50)
+
 
         try:
             # 0. DATA FRESHNESS CHECK
@@ -84,18 +88,22 @@ class Orchestrator:
                 result = await self._process_one_with_tracking(opp, evidence, fp_info)
                 results.append(result)
 
+
             logger.info("━" * 50)
             logger.info("✅ CYCLE COMPLETE")
             logger.info(f"   Processed: {len(results)} opportunities")
             logger.info("━" * 50)
 
+
             return {
                 "status": "completed",
                 "opportunities_processed": len(results),
                 "results": results,
+                "results": results,
             }
 
         except Exception as e:
+            logger.error(f"❌ Cycle failed: {e}", exc_info=True)
             logger.error(f"❌ Cycle failed: {e}", exc_info=True)
             return {"status": "failed", "error": str(e)}
 
@@ -205,27 +213,28 @@ class Orchestrator:
                 self.client.get_seo_issues(self.brand_id),
                 self.client.get_pending_leads(self.brand_id),
                 self.client.get_campaigns(self.brand_id),
-                return_exceptions=True
+                return_exceptions=True,
             )
-            
+
             evidence = {
                 "analytics": analytics if not isinstance(analytics, Exception) else {},
                 "seo_issues": seo_issues if not isinstance(seo_issues, Exception) else [],
                 "leads": leads if not isinstance(leads, Exception) else [],
                 "campaigns": campaigns if not isinstance(campaigns, Exception) else [],
             }
-            
+
             logger.info(f"   ✅ Analytics: {len(evidence['analytics']) if evidence['analytics'] else 0}")
             logger.info(f"   ✅ SEO issues: {len(evidence['seo_issues'])}")
             logger.info(f"   ✅ Leads: {len(evidence['leads'])}")
             logger.info(f"   ✅ Campaigns: {len(evidence['campaigns'])}")
-            
+
             return evidence
         except Exception as e:
             logger.error(f"Failed to gather evidence snapshot: {e}")
             return {}
 
     async def _process_opportunity(self, opportunity: Dict, evidence: Dict) -> Dict:
+        """Process a single opportunity through the pipeline."""
         opp_type = opportunity.get("type")
         specialist = self.specialists.get(opp_type)
         if not specialist:
@@ -233,9 +242,7 @@ class Orchestrator:
             return {"success": False, "message": f"No specialist for {opp_type}"}
 
         # Reason (specialist.reason is async). This already calls
-        # self.memory.analyze_patterns() internally, so don't call it again.
-        # `evidence` is the once-per-cycle snapshot passed in from run_cycle
-        # — not re-fetched here.
+        # self.memory.analyze_patterns() internally.
         decision = await specialist.reason(opportunity, evidence, self.context)
 
         # Safety policy
@@ -243,7 +250,7 @@ class Orchestrator:
             "action_name": decision.get("action", {}).get("name", "unknown"),
             "brand_id": self.brand_id,
             "confidence": decision.get("confidence", 0.0),
-            "estimated_impact": decision.get("estimated_impact", 0)
+            "estimated_impact": decision.get("estimated_impact", 0),
         })
 
         # Execute or approve
@@ -253,7 +260,7 @@ class Orchestrator:
             execution_result = {
                 "status": "requires_approval",
                 "message": "Action requires human review",
-                "decision": decision
+                "decision": decision,
             }
 
         # Verify if executed
@@ -272,10 +279,11 @@ class Orchestrator:
             "decision": decision,
             "safety": safety_result,
             "execution": execution_result,
-            "verification": verification_result
+            "verification": verification_result,
         }
 
     async def _monitor(self) -> List[Dict]:
+        """Monitor for opportunities."""
         result_str = await monitor_opportunities(self.brand_id)
         try:
             data = json.loads(result_str)
