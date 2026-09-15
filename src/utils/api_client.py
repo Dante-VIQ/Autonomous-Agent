@@ -142,6 +142,17 @@ class LaravelApiClient:
             endpoint += "?" + "&".join(params)
         return await self._request("GET", endpoint)
     
+    async def check_opportunities(self, brand_id: int, opportunities: list) -> Dict:
+        """Ask Laravel which fingerprints are new / recurring / already processed today."""
+        return await self._request("POST", "/agent/opportunities/check", {
+            "brand_id": brand_id,
+            "opportunities": opportunities,
+        })
+
+    async def mark_opportunity(self, **data) -> Dict:
+        """Mark an opportunity as processing / processed / failed."""
+        return await self._request("POST", "/agent/opportunities/mark", data)
+
 async def rollback_action(self, action_id: str, brand_id: int, action_name: str) -> Dict:
     return await self._request("POST", f"/agent/rollback/log", {
         "action_id": action_id,

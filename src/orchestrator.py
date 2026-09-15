@@ -37,43 +37,166 @@ class Orchestrator:
         logger.info("━" * 50)
         logger.info(f"🔄 AGENT CYCLE — Brand {self.brand_id}")
         logger.info("━" * 50)
-        
+
         try:
+            # 0. DATA FRESHNESS CHECK
+            logger.info("🗣  Checking if today's data is fresh...")
+            try:
+                status = await self.client.check_data_status(self.brand_id)
+                if not status.get("all_fresh", False):
+                    logger.info(f"   ⏳ Data is stale: {status.get('freshness', {})}")
+                    logger.info("   📥 Asking Laravel to collect fresh data...")
+                    refresh = await self.client.refresh_data(self.brand_id)
+                    logger.info(f"   ✅ Laravel queued: {refresh.get('queued', [])}")
+                else:
+                    logger.info("   ✅ All data is already fresh!")
+            except Exception as e:
+                logger.warning(f"   ⚠  Freshness check failed (continuing): {e}")
+
             # 1. DISCOVERY
             logger.info("📡 DISCOVERY")
             opportunities = await self._monitor()
             if not opportunities:
                 logger.info("No opportunities found, skipping cycle.")
                 return {"status": "idle", "message": "No opportunities found"}
-            
-            # 2. EVIDENCE (cached once per cycle)
+
+            # 2. IDEMPOTENCY CHECK
+            logger.info("🔑 IDEMPOTENCY CHECK")
+            filtered, check_result = await self._filter_new_opportunities(opportunities)
+            already = len(check_result.get("already_processed_today", []))
+            logger.info(f"   ✅ {len(filtered)} to process, {already} already processed today")
+
+            if not filtered:
+                logger.info("   ✅ Nothing new to process.")
+                return {"status": "idle", "message": "All opportunities already processed"}
+
+            # 3. EVIDENCE
             logger.info("📊 EVIDENCE")
             evidence = await self._gather_evidence_snapshot()
-            self._evidence_cache = evidence
             logger.info(f"   ✅ Evidence snapshot cached ({len(evidence)} items)")
-            
-            # 3. PROCESS OPPORTUNITIES
-            logger.info(f"⚙️ PROCESSING {len(opportunities)} OPPORTUNITIES")
+
+            # 4. PROCESS OPPORTUNITIES
+            logger.info(f"⚙️ PROCESSING {len(filtered)} OPPORTUNITIES")
             results = []
-            for i, opp in enumerate(opportunities):
-                logger.info(f"   → Opportunity #{i+1}: {opp.get('type')} - {opp.get('title', 'Untitled')}")
-                result = await self._process_opportunity(opp, evidence)
+            for i, (opp, fp_info) in enumerate(filtered):
+                title = opp.get("title", "Untitled")
+                logger.info(f"   → Opportunity #{i+1}: {opp.get('type')} - {title}")
+                result = await self._process_one_with_tracking(opp, evidence, fp_info)
                 results.append(result)
-            
+
             logger.info("━" * 50)
             logger.info("✅ CYCLE COMPLETE")
             logger.info(f"   Processed: {len(results)} opportunities")
             logger.info("━" * 50)
-            
+
             return {
                 "status": "completed",
                 "opportunities_processed": len(results),
-                "results": results
+                "results": results,
             }
+
         except Exception as e:
-            logger.error(f"❌ Cycle failed: {e}")
+            logger.error(f"❌ Cycle failed: {e}", exc_info=True)
             return {"status": "failed", "error": str(e)}
 
+    async def _filter_new_opportunities(self, opportunities: list):
+        """Compute fingerprints, ask Laravel which are new, return filtered list."""
+        from .utils.fingerprints import fingerprint, stable_key
+
+        enriched = []
+        for opp in opportunities:
+            fp = fingerprint(opp, self.brand_id)
+            sk = stable_key(opp, self.brand_id)
+            enriched.append({
+                "fingerprint": fp,
+                "stable_key": sk,
+                "type": opp.get("type", "unknown"),
+                "_original": opp,
+            })
+
+        response = await self.client.check_opportunities(self.brand_id, enriched)
+
+        new_fps = {item["fingerprint"] for item in response.get("new", [])}
+        recurring_fps = {
+            item["fingerprint"]: item
+            for item in response.get("recurring", [])
+        }
+
+        filtered = []
+        for item in enriched:
+            fp = item["fingerprint"]
+            if fp in new_fps:
+                filtered.append((item["_original"], {**item, "is_recurring": False}))
+            elif fp in recurring_fps:
+                merged = {**item, "is_recurring": True}
+                merged.update(recurring_fps[fp])
+                filtered.append((item["_original"], merged))
+
+        return filtered, response
+
+    async def _process_one_with_tracking(self, opportunity, evidence, fp_info):
+        """Process a single opportunity and mark it in Laravel."""
+        fingerprint_val = fp_info["fingerprint"]
+        stable_key_val = fp_info["stable_key"]
+        opp_type = opportunity.get("type", "unknown")
+
+        # Mark as processing
+        try:
+            await self.client.mark_opportunity(
+                brand_id=self.brand_id,
+                fingerprint=fingerprint_val,
+                stable_key=stable_key_val,
+                opportunity_type=opp_type,
+                status="processing",
+                opportunity_data=opportunity,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to mark opportunity as processing: {e}")
+
+        try:
+            # Pass recurrence info to specialists
+            self.context["recurrence"] = fp_info
+
+            result = await self._process_opportunity(opportunity, evidence)
+
+            # Extract action_id if present
+            action_id = None
+            result_data = (result.get("execution", {}) or {}).get("result", {}) or {}
+            if isinstance(result_data, dict):
+                action_id = result_data.get("action_id")
+
+            # Mark as processed
+            try:
+                await self.client.mark_opportunity(
+                    brand_id=self.brand_id,
+                    fingerprint=fingerprint_val,
+                    stable_key=stable_key_val,
+                    opportunity_type=opp_type,
+                    status="processed",
+                    opportunity_data=opportunity,
+                    action_id=action_id,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to mark opportunity as processed: {e}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to process opportunity: {e}", exc_info=True)
+            try:
+                await self.client.mark_opportunity(
+                    brand_id=self.brand_id,
+                    fingerprint=fingerprint_val,
+                    stable_key=stable_key_val,
+                    opportunity_type=opp_type,
+                    status="failed",
+                    opportunity_data=opportunity,
+                )
+            except Exception as mark_err:
+                logger.warning(f"Failed to mark opportunity as failed: {mark_err}")
+
+            return {"success": False, "error": str(e)}
+            
     async def _gather_evidence_snapshot(self) -> Dict:
         """Gather all evidence once per cycle."""
         try:
