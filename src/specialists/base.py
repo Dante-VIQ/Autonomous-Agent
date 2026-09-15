@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import asyncio
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from strands import Agent
@@ -41,7 +42,7 @@ class BaseSpecialist:
         self.system_prompt = system_prompt
         self.brand_id = None
 
-        # Build both models; fallback decision happens at call time
+        # Build both models
         self.model, self.fallback_model = self._setup_models()
 
         # Create primary and fallback agents
@@ -57,24 +58,21 @@ class BaseSpecialist:
             system_prompt=self.system_prompt,
         ) if self.fallback_model else None
 
+    # ============================================================
+    # MODEL SETUP
+    # ============================================================
+
     def _setup_models(self):
+        """Build primary (Gemini) and optional fallback (Ollama) models."""
         from strands.models import OllamaModel, GeminiModel
 
         primary = None
-        try:
-            primary = OllamaModel(
-                host=Config.OLLAMA_HOST,
-                model_id=Config.OLLAMA_MODEL,
-                temperature=0.7,
-                max_tokens=2048
-            )
-        except Exception as e:
-            logger.warning(f"Could not construct Ollama model: {e}")
-
         fallback = None
+
+        # Gemini is primary (reliable)
         if Config.GEMINI_API_KEY:
             try:
-                fallback = GeminiModel(
+                primary = GeminiModel(
                     client_args={"api_key": Config.GEMINI_API_KEY},
                     model_id=Config.GEMINI_MODEL,
                     params={"temperature": 0.7, "max_output_tokens": 2048}
@@ -82,12 +80,31 @@ class BaseSpecialist:
             except Exception as e:
                 logger.warning(f"Could not construct Gemini model: {e}")
         else:
-            logger.warning("GEMINI_API_KEY not set – no fallback model if Ollama is unreachable.")
+            logger.warning("GEMINI_API_KEY not set.")
+
+        # Ollama as fallback (optional)
+        if Config.OLLAMA_HOST and Config.OLLAMA_MODEL:
+            try:
+                fallback = OllamaModel(
+                    host=Config.OLLAMA_HOST,
+                    model_id=Config.OLLAMA_MODEL,
+                    temperature=0.7,
+                    max_tokens=2048
+                )
+            except Exception as e:
+                logger.warning(f"Could not construct Ollama model: {e}")
 
         if primary is None and fallback is None:
-            raise RuntimeError("No usable model could be configured – both Ollama and Gemini failed to construct.")
+            raise RuntimeError(
+                "No usable model could be configured – "
+                "set GEMINI_API_KEY or configure Ollama."
+            )
 
         return primary, fallback
+
+    # ============================================================
+    # REASON (public entry point)
+    # ============================================================
 
     async def reason(self, opportunity: Dict, evidence: Dict, context: Dict) -> Dict:
         brand_id = context.get("brand_id")
@@ -100,21 +117,37 @@ class BaseSpecialist:
             "action_name": decision.get("action", {}).get("name", "unknown"),
             "brand_id": brand_id,
             "confidence": decision.get("confidence", 0.0),
-            "estimated_impact": decision.get("estimated_impact", 0)
+            "estimated_impact": decision.get("estimated_impact", 0),
         })
         decision["autonomous"] = safety_result.get("autonomous", False)
         decision["requires_approval"] = safety_result.get("requires_approval", True)
         decision["safety_reason"] = safety_result.get("reason", "Safety policy applied")
         return decision
 
-    def _build_reasoning_prompt(self, opportunity: Dict, evidence: Dict, pattern: Dict, context: Dict) -> str:
+    # ============================================================
+    # PROMPT BUILDER
+    # ============================================================
+
+    def _build_reasoning_prompt(self, opportunity, evidence, pattern, context):
+        trimmed_evidence = {
+            "analytics": evidence.get("analytics", {}),
+            "seo_count": len(evidence.get("seo_issues", [])),
+            "lead_count": len(evidence.get("leads", [])),
+            "campaign_count": len(evidence.get("campaigns", [])),
+        }
+
+        trimmed_pattern = {
+            "success_rate": pattern.get("success_rate"),
+            "avg_improvement": pattern.get("avg_improvement"),
+            "insights": pattern.get("insights", [])[:3],
+        }
+
         return f"""
 You are the {self.name}. Analyze this opportunity:
 
 Opportunity: {opportunity}
-Evidence: {evidence}
-Historical Pattern: {pattern}
-Context: {context}
+Evidence: {trimmed_evidence}
+Historical Pattern: {trimmed_pattern}
 
 Use your available tools if you need more information before deciding.
 Then propose a single action: its name, target, and payload, your
@@ -131,51 +164,71 @@ confidence (0.0-1.0), your reasoning, and the estimated dollar impact.
 Return a JSON object with: action {{name, target, payload}}, confidence, reasoning, estimated_impact.
 """
 
+    # ============================================================
+    # AI REASONING
+    # ============================================================
+
     async def _get_ai_reasoning(self, prompt: str) -> str:
         last_error = None
 
+        # --- Try primary (Gemini) with 120s timeout ---
         if self.agent:
             try:
-                decision = await self.agent.structured_output_async(
-                    output_model=_DecisionSchema,
-                    prompt=prompt,
+                decision = await asyncio.wait_for(
+                    self.agent.structured_output_async(
+                        output_model=_DecisionSchema,
+                        prompt=prompt,
+                    ),
+                    timeout=120.0
                 )
                 return self._decision_to_json(decision)
+            except asyncio.TimeoutError:
+                last_error = "Primary model timed out after 120s"
+                logger.warning(f"⏰ Primary model timed out for {self.name}")
             except Exception as e:
                 last_error = e
-                if "EOF" in str(e) or "Invalid JSON" in str(e):
-                    logger.warning(f"Structured output returned empty/EOF for {self.name}, falling back to regular generation")
-                else:
-                    logger.warning(f"Primary model failed for {self.name}: {e}")
+                logger.warning(f"Primary model failed for {self.name}: {e}")
 
+        # --- Try fallback (Ollama) with 120s timeout ---
         if self.fallback_agent:
             try:
-                decision = await self.fallback_agent.structured_output_async(
-                    output_model=_DecisionSchema,
-                    prompt=prompt,
+                decision = await asyncio.wait_for(
+                    self.fallback_agent.structured_output_async(
+                        output_model=_DecisionSchema,
+                        prompt=prompt,
+                    ),
+                    timeout=120.0
                 )
                 return self._decision_to_json(decision)
+            except asyncio.TimeoutError:
+                last_error = "Fallback model timed out after 120s"
+                logger.error(f"⏰ Fallback model timed out for {self.name}")
             except Exception as e:
                 last_error = e
-                logger.error(f"Fallback model also failed for {self.name}: {e}")
+                logger.error(f"Fallback model failed for {self.name}: {e}")
 
-        # Fallback: regular generation + JSON extraction
+        # --- Final fallback: plain generation ---
         try:
             model_to_use = self.model or self.fallback_model
             if not model_to_use:
                 raise ValueError("No model available")
-            response = await model_to_use.generate(prompt)
+            response = await asyncio.wait_for(
+                model_to_use.generate(prompt),
+                timeout=60.0
+            )
             content = response.get("content", "") if isinstance(response, dict) else str(response)
             if not content or content.strip() == "":
                 raise ValueError("Empty response from model")
             return self._extract_json_from_response(content)
         except Exception as e:
-            logger.error(f"All AI methods failed for {self.name}: {last_error}")
+            logger.error(f"All AI methods failed for {self.name}: {last_error or e}")
             return self._get_fallback_decision()
 
+    # ============================================================
+    # HELPERS
+    # ============================================================
+
     def _extract_json_from_response(self, content: str) -> str:
-        """Extract JSON from a free-text response."""
-        # Try to find a JSON object
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
             json_str = match.group(0)
@@ -185,7 +238,6 @@ Return a JSON object with: action {{name, target, payload}}, confidence, reasoni
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: return a default decision
         return json.dumps({
             "action": {"name": "no_action_needed", "target": "none", "payload": {}},
             "confidence": 0.0,
