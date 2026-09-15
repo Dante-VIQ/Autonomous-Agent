@@ -38,6 +38,29 @@ class LaravelApiClient:
     async def close(self):
         await self.client.aclose()
     
+        # ============ FRESHNESS / REFRESH ============
+
+    async def check_data_status(self, brand_id: int) -> Dict:
+        """Ask Laravel: is today's data fresh?"""
+        return await self._request("GET", f"/agent/data-status/{brand_id}")
+
+    async def refresh_data(self, brand_id: int) -> Dict:
+        """Ask Laravel to collect fresh data."""
+        return await self._request("POST", f"/agent/refresh-data/{brand_id}")
+
+    # ============ OPPORTUNITY TRACKING ============
+
+    async def check_opportunities(self, brand_id: int, opportunities: list) -> Dict:
+        """Ask Laravel which fingerprints are new / recurring / already processed today."""
+        return await self._request("POST", "/agent/opportunities/check", {
+            "brand_id": brand_id,
+            "opportunities": opportunities,
+        })
+
+    async def mark_opportunity(self, **data) -> Dict:
+        """Mark an opportunity as processing / processed / failed."""
+        return await self._request("POST", "/agent/opportunities/mark", data)
+        
     # ============ All methods are async ============
     
     async def get_opportunities(self, brand_id: int) -> List[Dict]:
@@ -142,16 +165,7 @@ class LaravelApiClient:
             endpoint += "?" + "&".join(params)
         return await self._request("GET", endpoint)
     
-    async def check_opportunities(self, brand_id: int, opportunities: list) -> Dict:
-        """Ask Laravel which fingerprints are new / recurring / already processed today."""
-        return await self._request("POST", "/agent/opportunities/check", {
-            "brand_id": brand_id,
-            "opportunities": opportunities,
-        })
 
-    async def mark_opportunity(self, **data) -> Dict:
-        """Mark an opportunity as processing / processed / failed."""
-        return await self._request("POST", "/agent/opportunities/mark", data)
 
 async def rollback_action(self, action_id: str, brand_id: int, action_name: str) -> Dict:
     return await self._request("POST", f"/agent/rollback/log", {
