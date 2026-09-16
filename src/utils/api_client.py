@@ -120,6 +120,31 @@ class LaravelApiClient:
     async def get_analytics(self, brand_id: int) -> Dict:
         return await self._request("GET", f"/agent/analytics/{brand_id}")
 
+    # ============ HUMAN OUTCOMES ============
+
+    async def get_pending_outcomes(self, brand_id: int) -> Dict:
+        """Fetch human decisions on actions the agent hasn't seen yet."""
+        return await self._request("GET", f"/agent/actions/outcomes/{brand_id}")
+
+    async def acknowledge_outcomes(self, brand_id: int, action_ids: list) -> Dict:
+        """Acknowledge to Laravel that the agent has processed these outcomes."""
+        return await self._request("POST", "/agent/actions/acknowledge", {
+            "brand_id": brand_id,
+            "action_ids": action_ids,
+        })
+
+    async def authorize_retry(
+        self,
+        action_id: int,
+        approach: str = None,
+        hold: bool = False,
+    ) -> Dict:
+        """Authorize a retry for a rejected action."""
+        return await self._request("POST", f"/agent/actions/{action_id}/authorize-retry", {
+            "expected_retry_approach": approach,
+            "hold": hold,
+        })
+        
     # ============ SEO ============
 
     async def get_seo_issues(self, brand_id: int) -> List[Dict]:

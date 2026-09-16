@@ -1,5 +1,6 @@
 # src/learner.py
 
+import asyncio
 import logging
 from typing import Dict, Any
 from .utils.api_client import LaravelApiClient
@@ -55,3 +56,27 @@ class Learner:
             return "moderate_success"
         else:
             return "marginal_success"
+
+
+    async def record_rejection(self, action_id: int, reason: str, brand_id: int, notes: str = None):
+        """Record a human rejection as a negative learning experience."""
+        try:
+            result = await self.client.record_learning(brand_id, {
+                "action_name": "human_review",
+                "opportunity_type": "rejection",
+                "severity": "high",
+                "was_autonomous": True,
+                "was_successful": False,
+                "confidence": 0.0,
+                "human_feedback": reason,
+                "context": {
+                    "action_id": action_id,
+                    "rejection_reason": reason,
+                    "notes": notes,
+                },
+            })
+            logger.info(f"📉 Recorded rejection for action {action_id}: {reason}")
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to record rejection: {e}")
+            return {"success": False, "error": str(e)}

@@ -36,11 +36,9 @@ class Orchestrator:
         self._evidence_cache = None
 
     async def run_cycle(self) -> Dict[str, Any]:
-        """Run a full agent cycle: freshness → discovery → evidence → process."""
         logger.info("━" * 50)
         logger.info(f"🔄 AGENT CYCLE — Brand {self.brand_id}")
         logger.info("━" * 50)
-
 
         try:
             # 0. DATA FRESHNESS CHECK
@@ -49,7 +47,6 @@ class Orchestrator:
                 status = await self.client.check_data_status(self.brand_id)
                 if not status.get("all_fresh", False):
                     logger.info(f"   ⏳ Data is stale: {status.get('freshness', {})}")
-                    logger.info("   📥 Asking Laravel to collect fresh data...")
                     refresh = await self.client.refresh_data(self.brand_id)
                     logger.info(f"   ✅ Laravel queued: {refresh.get('queued', [])}")
                 else:
@@ -57,14 +54,22 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"   ⚠  Freshness check failed (continuing): {e}")
 
-            # 1. DISCOVERY
+            # 1. PROCESS HUMAN OUTCOMES (NEW)
+            logger.info("📬 PROCESSING HUMAN OUTCOMES")
+            outcomes_processed = await self._process_outcomes()
+
+            # 2. DISCOVERY
             logger.info("📡 DISCOVERY")
             opportunities = await self._monitor()
             if not opportunities:
                 logger.info("No opportunities found, skipping cycle.")
-                return {"status": "idle", "message": "No opportunities found"}
+                return {
+                    "status": "idle",
+                    "message": "No opportunities found",
+                    "outcomes_processed": outcomes_processed,
+                }
 
-            # 2. IDEMPOTENCY CHECK
+            # 3. IDEMPOTENCY CHECK
             logger.info("🔑 IDEMPOTENCY CHECK")
             filtered, check_result = await self._filter_new_opportunities(opportunities)
             already = len(check_result.get("already_processed_today", []))
@@ -72,14 +77,18 @@ class Orchestrator:
 
             if not filtered:
                 logger.info("   ✅ Nothing new to process.")
-                return {"status": "idle", "message": "All opportunities already processed"}
+                return {
+                    "status": "idle",
+                    "message": "All opportunities already processed",
+                    "outcomes_processed": outcomes_processed,
+                }
 
-            # 3. EVIDENCE
+            # 4. EVIDENCE
             logger.info("📊 EVIDENCE")
             evidence = await self._gather_evidence_snapshot()
             logger.info(f"   ✅ Evidence snapshot cached ({len(evidence)} items)")
 
-            # 4. PROCESS OPPORTUNITIES
+            # 5. PROCESS OPPORTUNITIES
             logger.info(f"⚙️ PROCESSING {len(filtered)} OPPORTUNITIES")
             results = []
             for i, (opp, fp_info) in enumerate(filtered):
@@ -88,25 +97,97 @@ class Orchestrator:
                 result = await self._process_one_with_tracking(opp, evidence, fp_info)
                 results.append(result)
 
-
             logger.info("━" * 50)
             logger.info("✅ CYCLE COMPLETE")
             logger.info(f"   Processed: {len(results)} opportunities")
+            logger.info(f"   Outcomes handled: {outcomes_processed}")
             logger.info("━" * 50)
-
 
             return {
                 "status": "completed",
                 "opportunities_processed": len(results),
-                "results": results,
+                "outcomes_processed": outcomes_processed,
                 "results": results,
             }
 
         except Exception as e:
             logger.error(f"❌ Cycle failed: {e}", exc_info=True)
-            logger.error(f"❌ Cycle failed: {e}", exc_info=True)
             return {"status": "failed", "error": str(e)}
 
+    async def _process_outcomes(self) -> int:
+        """Process human decisions on actions the agent created."""
+        try:
+            response = await self.client.get_pending_outcomes(self.brand_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch outcomes: {e}")
+            return 0
+
+        outcomes = response.get("outcomes", [])
+        if not outcomes:
+            logger.info("   ✅ No pending outcomes")
+            return 0
+
+        logger.info(f"   📬 {len(outcomes)} outcomes to process")
+        handled_ids = []
+
+        for outcome in outcomes:
+            action_id = outcome.get("action_id")
+            status = outcome.get("status")
+            try:
+                await self._handle_outcome(outcome)
+                handled_ids.append(action_id)
+            except Exception as e:
+                logger.error(f"   ❌ Failed to handle outcome {action_id}: {e}")
+
+        if handled_ids:
+            try:
+                await self.client.acknowledge_outcomes(self.brand_id, handled_ids)
+                logger.info(f"   ✅ Acknowledged {len(handled_ids)} outcomes")
+            except Exception as e:
+                logger.warning(f"   ⚠  Failed to acknowledge outcomes: {e}")
+
+        return len(handled_ids)
+
+    async def _handle_outcome(self, outcome: dict):
+        """Handle a single human decision."""
+        action_id = outcome.get("action_id")
+        status = outcome.get("status")
+        retry_status = outcome.get("retry_status", "none")
+
+        if status == "approved":
+            # Approval is recorded, but execution happens in the next cycle
+            # via the human's explicit "authorize_retry" or a scheduled executor
+            logger.info(f"   ✅ Action {action_id} approved — will be picked up by executor")
+
+        elif status == "rejected":
+            reason = outcome.get("rejection_reason", "unknown")
+            notes = outcome.get("review_notes", "")
+            logger.info(f"   🚫 Action {action_id} rejected: {reason}")
+
+            # Record the rejection for learning
+            await self.learner.record_rejection(
+                action_id=action_id,
+                reason=reason,
+                brand_id=self.brand_id,
+                notes=notes,
+            )
+
+            # If human authorized a retry, log it (will show as an opportunity on next cycle)
+            if retry_status == "authorized":
+                logger.info(
+                    f"   🔄 Retry authorized for {action_id}. "
+                    f"Approach: {outcome.get('expected_retry_approach', 'none')}"
+                )
+            elif retry_status == "held":
+                logger.info(f"   ⏸  Retry held for {action_id}. Waiting for human to release.")
+
+        elif status == "revision":
+            notes = outcome.get("review_notes", "")
+            logger.info(f"   🔄 Action {action_id} needs revision: {notes}")
+            # Future: trigger content regeneration with feedback
+
+        else:
+            logger.debug(f"   Skipping unknown status: {status}")
     async def _filter_new_opportunities(self, opportunities: list):
         """Compute fingerprints, ask Laravel which are new, return filtered list."""
         from .utils.fingerprints import fingerprint, stable_key
