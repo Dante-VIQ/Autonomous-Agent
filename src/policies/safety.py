@@ -91,6 +91,14 @@ class SafetyPolicy:
     reversible=True,
     risk_level="high"
 ),
+    "escalate_recurring_issue": ActionPolicy(
+        action_name="escalate_recurring_issue",
+        requires_approval=False,   # Escalations don't need approval — they ARE the request
+        max_frequency_per_hour=10,
+        requires_reasoning=False,
+        reversible=True,
+        risk_level="low"
+    ),
         }
     
     def evaluate(self, request: Dict[str, Any]) -> Dict[str, Any]:

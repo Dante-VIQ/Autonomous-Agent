@@ -95,6 +95,11 @@ class LaravelApiClient:
         """Ask Laravel to collect fresh data."""
         return await self._request("POST", f"/agent/refresh-data/{brand_id}")
 
+    # Brief Generation
+    async def get_brief(self, brand_id: int) -> Dict:
+        """Fetch today's strategic brief for this brand."""
+        return await self._request("GET", f"/agent/brief/{brand_id}")
+    
     # ============ OPPORTUNITY TRACKING ============
 
     async def check_opportunities(self, brand_id: int, opportunities: list) -> Dict:
@@ -144,7 +149,14 @@ class LaravelApiClient:
             "expected_retry_approach": approach,
             "hold": hold,
         })
-        
+
+    async def get_opportunity_history(self, brand_id: int, stable_key: str) -> Dict:
+        """Fetch all prior attempts for a recurring opportunity."""
+        return await self._request("GET", f"/agent/opportunities/history/{brand_id}/{stable_key}")
+
+    async def get_pending_escalations(self, brand_id: int) -> Dict:
+        return await self._request("GET", f"/agent/escalations/{brand_id}")
+
     # ============ SEO ============
 
     async def get_seo_issues(self, brand_id: int) -> List[Dict]:
@@ -264,3 +276,82 @@ async def rollback_action(self, action_id: str, brand_id: int, action_name: str)
         "action_name": action_name,
         "brand_id": brand_id
     })
+
+        # ============ CALIBRATION ============
+
+    async def get_calibration(self, brand_id: int, opportunity_type: str = None, action_name: str = None) -> Dict:
+        params = []
+        if opportunity_type:
+            params.append(f"type={opportunity_type}")
+        if action_name:
+            params.append(f"action={action_name}")
+        endpoint = f"/agent/calibration/{brand_id}"
+        if params:
+            endpoint += "?" + "&".join(params)
+        return await self._request("GET", endpoint)
+
+    async def record_calibration(self, brand_id: int, stated_confidence: float,
+        opportunity_type: str, action_name: str,
+        was_successful: bool) -> Dict:
+        return await self._request("POST", "/agent/calibration/record", {
+            "brand_id":          brand_id,
+            "stated_confidence": stated_confidence,
+            "opportunity_type":  opportunity_type,
+            "action_name":       action_name,
+            "was_successful":    was_successful,
+        })
+
+        # ============ VERIFICATION ============
+
+    async def register_verification(self, brand_id: int, action_id: int,
+        action_name: str, metrics: dict = None) -> Dict:
+        return await self._request("POST", "/agent/verification/register", {
+            "brand_id":             brand_id,
+            "action_id":            action_id,
+            "action_name":          action_name,
+            "metrics_at_execution": metrics,
+        })
+
+
+    async def record_verification(self, brand_id: int, action_id: int, phase: str,
+            metrics_after: dict, was_successful: bool,
+            metrics_before: dict = None, improvement_score: float = None,
+            metric_deltas: dict = None) -> Dict:
+        return await self._request("POST", "/agent/verification/record", {
+            "brand_id":          brand_id,
+            "action_id":         action_id,
+            "phase":             phase,
+            "metrics_before":    metrics_before,
+            "metrics_after":     metrics_after,
+            "metric_deltas":     metric_deltas,
+            "was_successful":    was_successful,
+            "improvement_score": improvement_score,
+        })
+
+    async def rollback_action(self, action_id: int, reason: str) -> Dict:
+        return await self._request("POST", f"/agent/actions/{action_id}/rollback", {
+            "reason": reason,
+        })
+
+    async def get_due_verifications(self, brand_id: int) -> Dict:
+        """Fetch actions that are due for hour-1 or day-1 verification."""
+        return await self._request("GET", f"/agent/verification/due/{brand_id}")
+
+    async def get_calibration(
+        self, brand_id: int,
+        opportunity_type: str = None,
+        action_name: str = None,
+    ) -> Dict:
+        """Fetch calibration buckets for a brand."""
+        params = []
+        if opportunity_type:
+            params.append(f"type={opportunity_type}")
+        if action_name:
+            params.append(f"action={action_name}")
+        endpoint = f"/agent/calibration/{brand_id}"
+        if params:
+            endpoint += "?" + "&".join(params)
+        return await self._request("GET", endpoint)
+    
+    async def get_tours(self, brand_id: int) -> Dict:
+        return await self._request("GET", f"/agent/tours/{brand_id}")

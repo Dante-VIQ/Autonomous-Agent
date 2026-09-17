@@ -13,6 +13,10 @@ from .verifier import Verifier
 from .learner import Learner
 from .utils.api_client import LaravelApiClient
 from .memory.experience import ExperienceMemory
+from .services.calibration import CalibrationService
+
+ESCALATION_THRESHOLD = 5
+CRITICAL_ESCALATION_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +33,13 @@ class Orchestrator:
         }
         self.safety = SafetyPolicy()
         self.executor = Executor()
-        self.verifier = Verifier()
         self.learner = Learner()
+
+        # ✅ These three lines must be present
         self.client = LaravelApiClient()
         self.memory = ExperienceMemory()
+        self.verifier = Verifier(self.client)
+        self.calibration = CalibrationService(self.client, brand_id)
         self._evidence_cache = None
 
     async def run_cycle(self) -> Dict[str, Any]:
@@ -54,9 +61,52 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"   ⚠  Freshness check failed (continuing): {e}")
 
-            # 1. PROCESS HUMAN OUTCOMES (NEW)
+                # 0.5. FETCH DAILY BRIEF
+            logger.info("📋 FETCHING DAILY BRIEF")
+            try:
+                brief_response = await self.client.get_brief(self.brand_id)
+                if brief_response.get("success"):
+                    brief = brief_response.get("brief", {})
+                    self.context["brief"] = brief
+                    diagnosis = brief.get("strategic_diagnosis", "")[:120]
+                    impact = brief.get("estimated_revenue_impact", 0)
+                    logger.info(f"   📌 {diagnosis}...")
+                    logger.info(f"   💰 Est. impact: ${impact}")
+                else:
+                    logger.info(f"   ℹ️  No brief available yet")
+                    self.context["brief"] = {}
+            except Exception as e:
+                logger.warning(f"   ⚠  Brief fetch failed: {e}")
+                self.context["brief"] = {}
+                
+                # 0.6. FETCH TOURS
+                logger.info("🎫 FETCHING TOURS")
+                tours_response = await self.client.get_tours(self.brand_id)
+                tours = tours_response.get("tours", [])
+                self.context["tours"] = tours
+                logger.info(f"   ✅ {len(tours)} tours available")
+            
+            # 1. PROCESS HUMAN OUTCOMES
             logger.info("📬 PROCESSING HUMAN OUTCOMES")
-            outcomes_processed = await self._process_outcomes()
+            try:
+                outcomes_processed = await self._process_outcomes()
+            except Exception as e:
+                logger.warning(f"   ⚠  Outcomes processing failed: {e}")
+                outcomes_processed = 0
+
+            # 1.5. RUN DUE VERIFICATIONS (Phase 6)
+            logger.info("🔍 CHECKING VERIFICATIONS")
+            try:
+                due_results = await self.verifier.run_due_verifications(self.brand_id)
+                if due_results.get("hour_1") or due_results.get("day_1"):
+                    logger.info(
+                        f"   ✅ Ran {due_results.get('hour_1', 0)} hour-1, "
+                        f"{due_results.get('day_1', 0)} day-1 verifications"
+                    )
+                else:
+                    logger.info("   ✅ No verifications due")
+            except Exception as e:
+                logger.warning(f"   ⚠  Verification run failed: {e}")
 
             # 2. DISCOVERY
             logger.info("📡 DISCOVERY")
@@ -133,9 +183,18 @@ class Orchestrator:
         for outcome in outcomes:
             action_id = outcome.get("action_id")
             status = outcome.get("status")
+
             try:
+                # Handle escalation responses FIRST
+                if outcome.get("human_response"):
+                    await self._handle_escalation_response(outcome)
+                    handled_ids.append(action_id)
+                    continue
+
+                # Otherwise, handle by status
                 await self._handle_outcome(outcome)
                 handled_ids.append(action_id)
+
             except Exception as e:
                 logger.error(f"   ❌ Failed to handle outcome {action_id}: {e}")
 
@@ -188,6 +247,7 @@ class Orchestrator:
 
         else:
             logger.debug(f"   Skipping unknown status: {status}")
+    
     async def _filter_new_opportunities(self, opportunities: list):
         """Compute fingerprints, ask Laravel which are new, return filtered list."""
         from .utils.fingerprints import fingerprint, stable_key
@@ -224,10 +284,11 @@ class Orchestrator:
         return filtered, response
 
     async def _process_one_with_tracking(self, opportunity, evidence, fp_info):
-        """Process a single opportunity and mark it in Laravel."""
+        """Process a single opportunity with recurrence awareness."""
         fingerprint_val = fp_info["fingerprint"]
         stable_key_val = fp_info["stable_key"]
         opp_type = opportunity.get("type", "unknown")
+        recurrence = fp_info.get("recurrence_count", 1)
 
         # Mark as processing
         try:
@@ -243,10 +304,25 @@ class Orchestrator:
             logger.warning(f"Failed to mark opportunity as processing: {e}")
 
         try:
-            # Pass recurrence info to specialists
-            self.context["recurrence"] = fp_info
+            # --- ESCALATION CHECK ---
+            if self._should_escalate(fp_info, opportunity):
+                logger.warning(
+                    f"   🚨 Escalating: {opp_type} recurrence #{recurrence}"
+                )
+                result = await self._escalate_opportunity(
+                    opportunity, fp_info, stable_key_val
+                )
+                status_to_mark = "escalated"
+            else:
+                # --- NORMAL PROCESSING (with pattern context if recurring) ---
+                if recurrence > 1:
+                    logger.info(f"   🔁 Recurrence #{recurrence} — fetching history")
+                    history = await self._fetch_history(stable_key_val)
+                    self.context["recurrence_history"] = history
+                    self.context["recurrence"] = fp_info
 
-            result = await self._process_opportunity(opportunity, evidence)
+                result = await self._process_opportunity(opportunity, evidence)
+                status_to_mark = "processed"
 
             # Extract action_id if present
             action_id = None
@@ -254,19 +330,19 @@ class Orchestrator:
             if isinstance(result_data, dict):
                 action_id = result_data.get("action_id")
 
-            # Mark as processed
+            # Mark as processed/escalated
             try:
                 await self.client.mark_opportunity(
                     brand_id=self.brand_id,
                     fingerprint=fingerprint_val,
                     stable_key=stable_key_val,
                     opportunity_type=opp_type,
-                    status="processed",
+                    status=status_to_mark,
                     opportunity_data=opportunity,
                     action_id=action_id,
                 )
             except Exception as e:
-                logger.warning(f"Failed to mark opportunity as processed: {e}")
+                logger.warning(f"Failed to mark opportunity as {status_to_mark}: {e}")
 
             return result
 
@@ -285,7 +361,77 @@ class Orchestrator:
                 logger.warning(f"Failed to mark opportunity as failed: {mark_err}")
 
             return {"success": False, "error": str(e)}
-            
+
+    async def _escalate_opportunity(self, opportunity, fp_info, stable_key: str):
+        """Create an escalation action for a human."""
+        history = await self._fetch_history(stable_key)
+        summary = history.get("summary", {})
+        attempts = history.get("attempts", [])
+
+        recurrence = fp_info.get("recurrence_count", 1)
+        title = opportunity.get("title", "Unknown recurring issue")
+
+        # Build description
+        first_seen = summary.get("first_seen", "unknown")
+        total = summary.get("total_attempts", recurrence)
+        successful = summary.get("successful", 0)
+        failed = summary.get("failed", 0)
+        rejection_reasons = summary.get("rejection_reasons", [])
+
+        description = (
+            f"This issue has occurred {total} times since {first_seen}. "
+            f"Previous attempts: {successful} successful, {failed} failed. "
+        )
+        if rejection_reasons:
+            description += f"Human rejection reasons: {', '.join(rejection_reasons)}. "
+        description += (
+            "The agent has exhausted its standard approaches. "
+            "Human investigation needed to identify the root cause."
+        )
+
+        # Priority based on recurrence
+        priority = min(5, max(3, recurrence // 2))
+
+        payload = {
+            "stable_key": stable_key,
+            "recurrence_count": total,
+            "first_seen": first_seen,
+            "prior_attempts": attempts[-5:],  # last 5 attempts
+            "rejection_reasons": rejection_reasons,
+            "expected_decision": "investigate_root_cause",
+        }
+
+        # Send to Laravel
+        try:
+            result = await self.client.create_pending_action(
+                self.brand_id,
+                {
+                    "name": "escalate_recurring_issue",
+                    "target": stable_key,
+                    "payload": payload,
+                    "title": f"🚨 Recurring: {title} (×{total})",
+                    "category": "escalation",
+                    "description": description,
+                    "priority": priority,
+                },
+                "Autonomous execution — recurring issue",
+            )
+
+            logger.info(
+                f"   ✅ Escalation created for {stable_key} (recurrence #{total})"
+            )
+
+            return {
+                "success": True,
+                "escalated": True,
+                "stable_key": stable_key,
+                "recurrence_count": total,
+                "result": result,
+            }
+        except Exception as e:
+            logger.error(f"   ❌ Failed to escalate: {e}")
+            return {"success": False, "error": str(e)}
+
     async def _gather_evidence_snapshot(self) -> Dict:
         """Gather all evidence once per cycle."""
         try:
@@ -322,9 +468,45 @@ class Orchestrator:
             logger.warning(f"⏭️ No specialist for opportunity type '{opp_type}', skipping")
             return {"success": False, "message": f"No specialist for {opp_type}"}
 
+        # ✅ ADD THIS LINE
+        verification_result = None
+        
         # Reason (specialist.reason is async). This already calls
         # self.memory.analyze_patterns() internally.
         decision = await specialist.reason(opportunity, evidence, self.context)
+
+        # ✅ NEW: Calibrate confidence against measured accuracy
+        stated = decision.get("confidence", 0.5)
+        opp_type = opportunity.get("type", "unknown")
+        action_name = decision.get("action", {}).get("name")
+
+        adjusted_confidence, calibration_note = await self.calibration.adjust(
+            stated_confidence=stated,
+            opportunity_type=opp_type,
+            action_name=action_name,
+        )
+
+        if adjusted_confidence != stated:
+            logger.info(
+                f"   📊 Confidence: {stated:.2f} → {adjusted_confidence:.2f} ({calibration_note})"
+            )
+
+        decision["stated_confidence"] = stated
+        decision["confidence"] = adjusted_confidence
+        decision["calibration_note"] = calibration_note
+
+                # ✅ Record calibration data
+        if verification_result and decision.get("stated_confidence") is not None:
+            try:
+                await self.client.record_calibration(
+                    brand_id=self.brand_id,
+                    stated_confidence=decision["stated_confidence"],
+                    opportunity_type=opp_type,
+                    action_name=action_name,
+                    was_successful=verification_result.get("was_successful", False),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record calibration: {e}")
 
         # Safety policy
         safety_result = self.safety.evaluate({
@@ -344,10 +526,11 @@ class Orchestrator:
                 "decision": decision,
             }
 
-        # Verify if executed
-        verification_result = None
+        # Register multi-phase verification
         if execution_result.get("status") == "executed":
-            verification_result = await self.verifier.verify(execution_result, self.brand_id)
+            verification_result = await self.verifier.verify_immediate(
+                execution_result, self.brand_id
+            )
 
         # Learn
         if verification_result:
@@ -374,3 +557,57 @@ class Orchestrator:
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse monitor response: {e}")
             return []
+
+    def _should_escalate(self, fp_info: dict, opportunity: dict) -> bool:
+        """Decide if this recurrence should escalate to human."""
+        recurrence = fp_info.get("recurrence_count", 1)
+        severity = (opportunity.get("severity") or "medium").lower()
+
+        if severity == "critical" and recurrence >= CRITICAL_ESCALATION_THRESHOLD:
+            return True
+        return recurrence >= ESCALATION_THRESHOLD
+
+    async def _fetch_history(self, stable_key: str) -> dict:
+        """Fetch prior attempts + any human escalation response."""
+        try:
+            history = await self.client.get_opportunity_history(self.brand_id, stable_key)
+
+            # Fetch any escalation response for this stable_key
+            try:
+                esc_resp = await self.client._request(
+                    "GET", f"/agent/escalations/{self.brand_id}"
+                )
+                # (Skip for now — future improvement)
+            except Exception:
+                pass
+
+            return history
+        except Exception as e:
+            logger.warning(f"Failed to fetch history for {stable_key}: {e}")
+            return {"attempts": [], "summary": {"total_attempts": 0}}
+
+    async def _handle_escalation_response(self, outcome: dict):
+        """Human responded to an escalation — act on it."""
+        action_id = outcome.get("action_id")
+        response = outcome.get("human_response")
+        notes = outcome.get("human_response_notes") or ""
+        stable_key = outcome.get("opportunity_stable_key")
+
+        logger.info(f"   📬 Escalation {action_id} → {response}")
+
+        if response == "resolve":
+            # Mark all tracking rows for this stable_key as resolved
+            logger.info(f"   ✅ Human resolved {stable_key}. No further retries.")
+            # (Optional: emit a Laravel call to mark tracking as resolved)
+
+        elif response == "snooze":
+            logger.info(f"   ⏸  Snoozed until {outcome.get('snooze_until')}")
+
+        elif response == "retry":
+            logger.info(f"   🔄 Human wants retry for {stable_key}. Guidance: {notes}")
+            # The next cycle's opportunity will include this guidance via
+            # the recurrence history and the human_response_notes field
+
+        elif response == "investigate":
+            logger.info(f"   🔍 Human wants deeper investigation for {stable_key}")
+            # Future: agent runs additional diagnostics

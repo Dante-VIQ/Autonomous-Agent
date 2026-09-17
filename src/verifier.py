@@ -7,142 +7,161 @@ from .utils.api_client import LaravelApiClient
 
 logger = logging.getLogger(__name__)
 
-ACTION_VERIFICATION_CONFIG = {
-    "seo_issue": {
-        "wait_seconds": 30,
-        "metrics": ["visitors", "conversions", "revenue", "page_views"]
-    },
-    "lead_notification": {
-        "wait_seconds": 5,
-        "metrics": ["visitors", "conversions", "revenue"]
-    },
-    "content_generation": {
-        "wait_seconds": 60,
-        "metrics": ["visitors", "conversions", "revenue", "page_views"]
-    },
-    "campaign_pause": {
-        "wait_seconds": 120,
-        "metrics": ["visitors", "conversions", "revenue"]
-    },
-    "analytics_alert": {
-        "wait_seconds": 30,
-        "metrics": ["visitors", "conversions", "revenue"]
-    },
-    "no_action_needed": {
-        "wait_seconds": 5,
-        "metrics": ["visitors", "conversions", "revenue"]
-    }
-}
 
 class Verifier:
-    def __init__(self):
-        self.client = LaravelApiClient()
+    """Multi-phase action verification with rollback support."""
 
-    async def verify(self, execution_result: Dict, brand_id: int) -> Dict:
-        """
-        Verify the outcome of an executed action.
-        Called by orchestrator after execution.
-        """
-        action = execution_result.get("action", {})
+    def __init__(self, api_client: LaravelApiClient = None):
+        self.client = api_client or LaravelApiClient()
+
+    async def verify_immediate(self, execution_result: Dict, brand_id: int) -> Dict:
+        """Immediate verification after action execution."""
+        action = execution_result.get("action", {}) or {}
         action_name = action.get("name", "unknown")
-        action_type = action.get("type", "unknown")
+        action_id = execution_result.get("action_id")
 
-        config = ACTION_VERIFICATION_CONFIG.get(action_type, {})
-        wait_seconds = config.get("wait_seconds", 30)
-        metrics = config.get("metrics", ["visitors", "conversions", "revenue"])
+        if not action_id:
+            logger.warning("No action_id in execution result — skipping verification")
+            return {"success": False, "reason": "no action_id"}
 
-        logger.info(f"🔍 Verifying {action_name} with {wait_seconds}s wait, metrics: {metrics}")
+        # Register verification schedule in Laravel
+        try:
+            schedule = await self.client.register_verification(
+                brand_id=brand_id,
+                action_id=action_id,
+                action_name=action_name,
+                metrics=execution_result.get("before_metrics"),
+            )
+            logger.info(f"📅 Verification scheduled for action {action_id}")
+            return {"success": True, "schedule": schedule}
+        except Exception as e:
+            logger.warning(f"Failed to register verification: {e}")
+            return {"success": False, "reason": str(e)}
 
-        # Wait for action to propagate
-        await asyncio.sleep(wait_seconds)
+    async def run_due_verifications(self, brand_id: int) -> Dict:
+        """Check for and run any due hour_1/day_1 verifications."""
+        try:
+            due = await self.client.get_due_verifications(brand_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch due verifications: {e}")
+            return {"hour_1": 0, "day_1": 0}
 
-        # Get before metrics (from execution context or API)
-        before_metrics = execution_result.get("before_metrics", {})
-        if not before_metrics:
-            # Try to fetch before metrics from the API
-            before_metrics = await self._fetch_metrics(brand_id, metrics)
+        hour_1_count = 0
+        day_1_count = 0
 
-        # Get after metrics
-        after_metrics = await self._fetch_metrics(brand_id, metrics)
+        # Hour 1
+        for item in due.get("hour_1", []):
+            if await self._verify_phase(item, "hour_1", brand_id):
+                hour_1_count += 1
 
-        # Calculate improvement
-        improvement = self._calculate_improvement(before_metrics, after_metrics, metrics)
-        was_successful = improvement.get("average", 0) >= 0.05  # 5% threshold
+        # Day 1
+        for item in due.get("day_1", []):
+            if await self._verify_phase(item, "day_1", brand_id):
+                day_1_count += 1
 
-        return {
-            "success": True,
-            "was_successful": was_successful,
-            "improvement": improvement,
-            "before_metrics": before_metrics,
-            "after_metrics": after_metrics,
-            "action_name": action_name,
-            "wait_seconds": wait_seconds
-        }
+                # Auto-rollback if day_1 failed
+                if self._should_rollback(item):
+                    await self._trigger_rollback(item, brand_id)
 
-    async def _fetch_metrics(self, brand_id: int, metrics: List[str] = None) -> Dict:
-        """Fetch metrics from Laravel."""
+        return {"hour_1": hour_1_count, "day_1": day_1_count}
+
+    async def _verify_phase(self, item: dict, phase: str, brand_id: int) -> bool:
+        action_id = item.get("action_id")
+        metrics_before = item.get("metrics_before") or {}
+        action_name = item.get("action_name", "unknown")
+
+        try:
+            metrics_after = await self._fetch_current_metrics(brand_id, item)
+        except Exception as e:
+            logger.warning(f"Failed to fetch metrics for action {action_id}: {e}")
+            return False
+
+        deltas = self._compute_deltas(metrics_before, metrics_after)
+        improvement = self._score_improvement(deltas)
+        was_successful = improvement >= 0.05  # 5% threshold
+
+        try:
+            await self.client.record_verification(
+                brand_id=brand_id,
+                action_id=action_id,
+                phase=phase,
+                metrics_before=metrics_before,
+                metrics_after=metrics_after,
+                metric_deltas=deltas,
+                was_successful=was_successful,
+                improvement_score=improvement,
+            )
+            logger.info(
+                f"✅ Verified action {action_id} ({phase}): "
+                f"{'success' if was_successful else 'failure'} (score: {improvement:.2%})"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to record verification: {e}")
+            return False
+
+    async def _fetch_current_metrics(self, brand_id: int, item: dict) -> Dict:
+        """Fetch metrics appropriate for the action type."""
         try:
             analytics = await self.client.get_analytics(brand_id)
-            result = {
-                "visitors": analytics.get("visitors", 0),
-                "conversions": analytics.get("conversions", 0),
-                "revenue": analytics.get("revenue", 0),
-                "page_views": analytics.get("pageViews", 0),
-                "sessions": analytics.get("sessions", 0),
+            return {
+                "impressions": analytics.get("pageViews", 0),
+                "clicks": analytics.get("visitors", 0),
+                "conversion_rate": analytics.get("conversions", 0),
+                "spend": analytics.get("revenue", 0),
+                "roi": analytics.get("revenue", 0),
+                "indexed_pages": analytics.get("pageViews", 0),
+                "ranking_position": 0,
+                "reply_rate": 0,
+                "engagement": analytics.get("visitors", 0),
             }
-            # If specific metrics are requested, filter the result
-            if metrics:
-                return {k: result.get(k, 0) for k in metrics if k in result}
-            return result
         except Exception as e:
             logger.warning(f"Failed to fetch metrics: {e}")
             return {}
 
-    def _calculate_improvement(self, before: Dict, after: Dict, metrics: List[str] = None) -> Dict:
-        """
-        Calculate improvement between two metric snapshots.
-        If metrics is None, use all available numeric fields.
-        """
-        if metrics is None:
-            # Use all numeric fields from before/after
-            metrics = []
-            all_keys = set(before.keys()) | set(after.keys())
-            for key in all_keys:
-                if key != 'timestamp' and isinstance(before.get(key, 0), (int, float)):
-                    metrics.append(key)
-
-        improvements = []
-        details = {}
-
-        for metric in metrics:
-            before_val = before.get(metric, 0)
-            after_val = after.get(metric, 0)
-
-            if not isinstance(before_val, (int, float)) or not isinstance(after_val, (int, float)):
-                continue
-
-            change = after_val - before_val
-            if before_val == 0:
-                # If before is 0 and after is positive, that's infinite improvement
-                if after_val > 0:
-                    change_percent = 100
+    def _compute_deltas(self, before: Dict, after: Dict) -> Dict:
+        deltas = {}
+        for key in set(before.keys()) | set(after.keys()):
+            b = before.get(key) or 0
+            a = after.get(key) or 0
+            try:
+                if b == 0 and a == 0:
+                    continue
+                if b == 0:
+                    deltas[key] = {"before": b, "after": a, "pct": None, "abs": a - b}
                 else:
-                    change_percent = 0
-            else:
-                change_percent = (change / before_val) * 100
+                    deltas[key] = {
+                        "before": b,
+                        "after": a,
+                        "pct": (a - b) / b,
+                        "abs": a - b,
+                    }
+            except Exception:
+                continue
+        return deltas
 
-            details[metric] = {
-                "before": before_val,
-                "after": after_val,
-                "change": change,
-                "percentage": change_percent
-            }
-            improvements.append(change_percent)
+    def _score_improvement(self, deltas: Dict) -> float:
+        scores = []
+        for _, d in deltas.items():
+            pct = d.get("pct")
+            if pct is not None:
+                scores.append(max(-1.0, min(1.0, pct)))
+        if not scores:
+            return 0.0
+        return sum(scores) / len(scores)
 
-        average = sum(improvements) / len(improvements) if improvements else 0
+    def _should_rollback(self, item: dict) -> bool:
+        """Roll back failed day_1 verifications if configured."""
+        from .config import Config
+        return getattr(Config, "AUTO_ROLLBACK", True)
 
-        return {
-            "average": average,
-            "details": details,
-            "overall": "success" if average >= 0 else "failure"
-        }
+    async def _trigger_rollback(self, item: dict, brand_id: int):
+        action_id = item.get("action_id")
+        action_name = item.get("action_name", "unknown")
+        reason = f"Day-1 verification failed for {action_name}"
+
+        try:
+            await self.client.rollback_action(action_id, reason)
+            logger.warning(f"🔄 Rollback triggered for action {action_id}: {reason}")
+        except Exception as e:
+            logger.error(f"Rollback failed for action {action_id}: {e}")

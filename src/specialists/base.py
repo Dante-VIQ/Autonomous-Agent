@@ -127,8 +127,8 @@ class BaseSpecialist:
     # ============================================================
     # PROMPT BUILDER
     # ============================================================
-
     def _build_reasoning_prompt(self, opportunity, evidence, pattern, context):
+        # Trim evidence to essentials
         trimmed_evidence = {
             "analytics": evidence.get("analytics", {}),
             "seo_count": len(evidence.get("seo_issues", [])),
@@ -136,18 +136,79 @@ class BaseSpecialist:
             "campaign_count": len(evidence.get("campaigns", [])),
         }
 
+        # Trim pattern insights to top 3
         trimmed_pattern = {
             "success_rate": pattern.get("success_rate"),
             "avg_improvement": pattern.get("avg_improvement"),
             "insights": pattern.get("insights", [])[:3],
         }
 
+        # --- Strategic Brief block ---
+        brief = context.get("brief", {}) or {}
+        brief_block = ""
+        if brief.get("strategic_diagnosis"):
+            suggested = brief.get("suggested_actions", []) or []
+            brief_block = f"""
+📋 TODAY'S STRATEGIC BRIEF (from the business):
+  Diagnosis: {brief['strategic_diagnosis']}
+  Estimated revenue impact: ${brief.get('estimated_revenue_impact', 0):,.2f}
+  Confidence: {brief.get('confidence_score', 0):.1f}%
+  Suggested actions: {', '.join(str(s) for s in suggested)}
+
+⚡ Weight your decision toward opportunities that align with this brief.
+"""
+
+        # --- Recurrence block ---
+        recurrence_block = ""
+        recurrence = context.get("recurrence", {})
+        history = context.get("recurrence_history", {})
+
+        if recurrence and recurrence.get("is_recurring"):
+            count = recurrence.get("recurrence_count", 1)
+            first_seen = recurrence.get("first_seen_at", "unknown")
+            summary = history.get("summary", {})
+            attempts = history.get("attempts", [])
+
+            recurrence_block = f"\n⚠️  RECURRING ISSUE — This is attempt #{count}\n"
+            recurrence_block += f"First seen: {first_seen}\n"
+            recurrence_block += f"Prior attempts: {summary.get('total_attempts', count - 1)}\n"
+            recurrence_block += f"Prior successes: {summary.get('successful', 0)}\n"
+            recurrence_block += f"Prior failures: {summary.get('failed', 0)}\n"
+
+            if summary.get("rejection_reasons"):
+                recurrence_block += (
+                    f"Human rejection reasons: {', '.join(summary['rejection_reasons'])}\n"
+                )
+
+            if attempts:
+                recurrence_block += "\nRecent attempts:\n"
+                for attempt in attempts[-3:]:
+                    status = attempt.get("status", "unknown")
+                    date = attempt.get("date", "unknown")
+                    reason = attempt.get("rejection_reason") or "—"
+                    notes = attempt.get("review_notes") or "—"
+                    recurrence_block += (
+                        f"  • {date} — status: {status}, "
+                        f"rejection: {reason}, notes: {notes}\n"
+                    )
+
+            recurrence_block += (
+                "\nIMPORTANT: Previous approaches have failed to resolve this permanently. "
+                "Consider:\n"
+                "  1. Is the root cause different than previous attempts assumed?\n"
+                "  2. Is the fix actually being deployed to production?\n"
+                "  3. Do you need to take a DIFFERENT approach this time?\n"
+            )
+
+        # --- SINGLE return with everything ---
         return f"""
 You are the {self.name}. Analyze this opportunity:
 
+{brief_block}
 Opportunity: {opportunity}
 Evidence: {trimmed_evidence}
 Historical Pattern: {trimmed_pattern}
+{recurrence_block}
 
 Use your available tools if you need more information before deciding.
 Then propose a single action: its name, target, and payload, your
