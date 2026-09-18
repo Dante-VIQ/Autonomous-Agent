@@ -14,6 +14,8 @@ logger = setup_logger(__name__, Config.LOG_LEVEL)
 
 async def run_cycle() -> Dict[str, Any]:
     """Run a single agent cycle using the Orchestrator."""
+    from .config import Config
+    Config.validate()
     logger.info("🔄 Starting agent cycle...")
     orchestrator = Orchestrator(Config.BRAND_ID)
     result = await orchestrator.run_cycle()

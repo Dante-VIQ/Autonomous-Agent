@@ -61,7 +61,8 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"   ⚠  Freshness check failed (continuing): {e}")
 
-                # 0.5. FETCH DAILY BRIEF
+
+                    # 0.5. FETCH DAILY BRIEF
             logger.info("📋 FETCHING DAILY BRIEF")
             try:
                 brief_response = await self.client.get_brief(self.brand_id)
@@ -73,19 +74,29 @@ class Orchestrator:
                     logger.info(f"   📌 {diagnosis}...")
                     logger.info(f"   💰 Est. impact: ${impact}")
                 else:
-                    logger.info(f"   ℹ️  No brief available yet")
+                    logger.info("   ℹ️  No brief available yet")
                     self.context["brief"] = {}
             except Exception as e:
                 logger.warning(f"   ⚠  Brief fetch failed: {e}")
                 self.context["brief"] = {}
-                
-                # 0.6. FETCH TOURS
-                logger.info("🎫 FETCHING TOURS")
+
+            # 0.6. FETCH TOURS
+            logger.info("🎫 FETCHING TOURS")
+            try:
                 tours_response = await self.client.get_tours(self.brand_id)
-                tours = tours_response.get("tours", [])
-                self.context["tours"] = tours
-                logger.info(f"   ✅ {len(tours)} tours available")
-            
+                if tours_response.get("success"):
+                    tours = tours_response.get("tours", [])
+                    self.context["tours"] = tours
+                    logger.info(f"   ✅ {len(tours)} tours available")
+                    for t in tours[:3]:
+                        logger.info(f"      • {t.get('name')} — ${t.get('price')}")
+                else:
+                    logger.info("   ℹ️  No tours available")
+                    self.context["tours"] = []
+            except Exception as e:
+                logger.warning(f"   ⚠  Tours fetch failed: {e}")
+                self.context["tours"] = []
+                
             # 1. PROCESS HUMAN OUTCOMES
             logger.info("📬 PROCESSING HUMAN OUTCOMES")
             try:

@@ -21,12 +21,20 @@ class Executor:
 
         try:
             result = await self._route_action(name, payload, brand_id)
+
+            # ✅ Lift action_id from result to top level
+            action_id = None
+            if isinstance(result, dict):
+                action_id = result.get("action_id") or result.get("id")
+
             return {
                 "status": "executed",
                 "action": action,
+                "action_id": action_id,     # ← top-level for verifier
                 "result": result,
                 "duration": 0,
             }
+            
         except httpx.ReadTimeout:
             logger.error(f"⏰ Timeout while executing {name} – Laravel is taking too long.")
             return {
@@ -59,8 +67,6 @@ class Executor:
             "create_blog_post": self.client.generate_content,
             "generate_content": self.client.generate_content,
             "notify_lead_response": self.client.generate_follow_up,
-            "pause_campaign": self.client.pause_campaign,
-            "adjust_campaign": self.client.pause_campaign,
         }
 
         func = action_map.get(name)
@@ -94,15 +100,20 @@ class Executor:
             return await func(brand_id)
 
     async def rollback(self, execution_result: Dict, brand_id: int) -> Dict:
-        """Rollback an executed action (currently only logs)."""
+        """Rollback an executed action."""
         action = execution_result.get("action", {})
         action_name = action.get("name", "unknown")
+        action_id = execution_result.get("action_id")
+
+        if not action_id:
+            logger.warning(f"Cannot rollback {action_name}: no action_id")
+            return {"success": False, "reason": "no action_id"}
+
         logger.warning(f"🔄 Rolling back action: {action_name}")
         try:
             result = await self.client.rollback_action(
-                action.get("target", "unknown"),
-                brand_id,
-                action_name,
+                action_id,
+                f"Rollback: {action_name}",
             )
             return {"success": True, "result": result}
         except Exception as e:
