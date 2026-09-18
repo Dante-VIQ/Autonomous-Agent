@@ -246,6 +246,10 @@ class LaravelApiClient:
     async def scan(self, brand_id: int) -> Dict:
         return await self._request("POST", f"/agent/scan/{brand_id}")
 
+    async def execute_action(self, action_id: int) -> Dict:
+        """Execute an approved action (called after human approval)."""
+        return await self._request("POST", f"/agent/actions/{action_id}/execute")
+    
     # ============ VERIFICATION ============
 
     async def start_verification(self, brand_id: int, action_name: str, **kwargs) -> Dict:

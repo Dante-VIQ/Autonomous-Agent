@@ -17,46 +17,53 @@ class Learner:
     
     async def record(self, opportunity: Dict, decision: Dict, execution: Dict, verification: Dict, brand_id: int) -> Dict:
         """Record a complete learning cycle."""
-        
-        # Build structured learning record
+
+        # Verifier returns a flat improvement_score, not a nested dict.
+        improvement = verification.get("improvement_score", 0) if verification else 0
+        was_successful = verification.get("was_successful", None) if verification else None
+
         learning = {
             "opportunity_type": opportunity.get("type", "unknown"),
             "severity": opportunity.get("severity", "medium"),
-            "action_name": decision.get("action", {}).get("name", "unknown"),
+            "action_name": (decision.get("action") or {}).get("name", "unknown"),
             "confidence": decision.get("confidence", 0.0),
             "was_autonomous": execution.get("status") == "executed",
-            "was_successful": verification.get("was_successful", False),
-            "improvement_percentage": verification.get("improvement", {}).get("average", 0) * 100,
+            "was_successful": bool(was_successful) if was_successful is not None else False,
+            "improvement_percentage": improvement * 100,
             "duration_seconds": execution.get("duration", 0),
             "context": {
                 "opportunity": opportunity,
                 "decision": decision,
                 "execution": execution,
-                "verification": verification
+                "verification": verification,
             },
-            "learning_type": self._determine_learning_type(verification)
+            "learning_type": self._determine_learning_type(verification or {}),
         }
-        
-        # Store in Laravel
+
         result = await self.client.record_learning(brand_id, learning)
-        
-        logger.info(f"📝 Learning recorded for {learning['action_name']}")
-        
+
+        logger.info(
+            f"📝 Learning recorded for {learning['action_name']} "
+            f"(status={'pending' if was_successful is None else 'verified'})"
+        )
+
         return result
     
     def _determine_learning_type(self, verification: Dict) -> str:
         """Determine what type of learning occurred."""
-        if not verification.get("was_successful", False):
+        was_successful = verification.get("was_successful")
+        if was_successful is None:
+            return "pending_verification"
+        if not was_successful:
             return "failure"
-        
-        improvement = verification.get("improvement", {}).get("average", 0)
+
+        improvement = verification.get("improvement_score", 0)
         if improvement > 0.15:
             return "significant_success"
         elif improvement > 0.05:
             return "moderate_success"
         else:
             return "marginal_success"
-
 
     async def record_rejection(self, action_id: int, reason: str, brand_id: int, notes: str = None):
         """Record a human rejection as a negative learning experience."""

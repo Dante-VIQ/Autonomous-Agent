@@ -225,16 +225,21 @@ class Orchestrator:
         retry_status = outcome.get("retry_status", "none")
 
         if status == "approved":
-            # Approval is recorded, but execution happens in the next cycle
-            # via the human's explicit "authorize_retry" or a scheduled executor
-            logger.info(f"   ✅ Action {action_id} approved — will be picked up by executor")
+            logger.info(f"   ✅ Action {action_id} approved — executing")
+            try:
+                result = await self.client.execute_action(action_id)
+                logger.info(
+                    f"   ⚡ Action {action_id} executed: "
+                    f"{result.get('result', result)}"
+                )
+            except Exception as e:
+                logger.error(f"   ❌ Failed to execute approved action {action_id}: {e}")
 
         elif status == "rejected":
             reason = outcome.get("rejection_reason", "unknown")
             notes = outcome.get("review_notes", "")
             logger.info(f"   🚫 Action {action_id} rejected: {reason}")
 
-            # Record the rejection for learning
             await self.learner.record_rejection(
                 action_id=action_id,
                 reason=reason,
@@ -242,7 +247,6 @@ class Orchestrator:
                 notes=notes,
             )
 
-            # If human authorized a retry, log it (will show as an opportunity on next cycle)
             if retry_status == "authorized":
                 logger.info(
                     f"   🔄 Retry authorized for {action_id}. "
@@ -254,11 +258,10 @@ class Orchestrator:
         elif status == "revision":
             notes = outcome.get("review_notes", "")
             logger.info(f"   🔄 Action {action_id} needs revision: {notes}")
-            # Future: trigger content regeneration with feedback
 
         else:
             logger.debug(f"   Skipping unknown status: {status}")
-    
+            
     async def _filter_new_opportunities(self, opportunities: list):
         """Compute fingerprints, ask Laravel which are new, return filtered list."""
         from .utils.fingerprints import fingerprint, stable_key
@@ -317,20 +320,16 @@ class Orchestrator:
         try:
             # --- ESCALATION CHECK ---
             if self._should_escalate(fp_info, opportunity):
-                logger.warning(
-                    f"   🚨 Escalating: {opp_type} recurrence #{recurrence}"
-                )
-                result = await self._escalate_opportunity(
-                    opportunity, fp_info, stable_key_val
-                )
+                logger.warning(f"   🚨 Escalating: {opp_type} recurrence #{recurrence}")
+                result = await self._escalate_opportunity(opportunity, fp_info, stable_key_val)
                 status_to_mark = "escalated"
             else:
-                # --- NORMAL PROCESSING (with pattern context if recurring) ---
+                # --- INJECT RECURRENCE INTO OPPORTUNITY (per-opportunity) ---
                 if recurrence > 1:
                     logger.info(f"   🔁 Recurrence #{recurrence} — fetching history")
                     history = await self._fetch_history(stable_key_val)
-                    self.context["recurrence_history"] = history
-                    self.context["recurrence"] = fp_info
+                    opportunity["_recurrence"] = fp_info
+                    opportunity["_recurrence_history"] = history
 
                 result = await self._process_opportunity(opportunity, evidence)
                 status_to_mark = "processed"
@@ -341,7 +340,6 @@ class Orchestrator:
             if isinstance(result_data, dict):
                 action_id = result_data.get("action_id")
 
-            # Mark as processed/escalated
             try:
                 await self.client.mark_opportunity(
                     brand_id=self.brand_id,
@@ -370,9 +368,8 @@ class Orchestrator:
                 )
             except Exception as mark_err:
                 logger.warning(f"Failed to mark opportunity as failed: {mark_err}")
-
             return {"success": False, "error": str(e)}
-
+        
     async def _escalate_opportunity(self, opportunity, fp_info, stable_key: str):
         """Create an escalation action for a human."""
         history = await self._fetch_history(stable_key)
@@ -479,17 +476,23 @@ class Orchestrator:
             logger.warning(f"⏭️ No specialist for opportunity type '{opp_type}', skipping")
             return {"success": False, "message": f"No specialist for {opp_type}"}
 
-        # ✅ ADD THIS LINE
-        verification_result = None
-        
-        # Reason (specialist.reason is async). This already calls
-        # self.memory.analyze_patterns() internally.
-        decision = await specialist.reason(opportunity, evidence, self.context)
+        # Build a per-opportunity context (no shared state leaks)
+        local_context = {
+            "brand_id": self.brand_id,
+            "brief": self.context.get("brief", {}),
+            "tours": self.context.get("tours", []),
+        }
+        # Attach recurrence info ONLY if this opportunity is recurring
+        if opportunity.get("_recurrence"):
+            local_context["recurrence"] = opportunity["_recurrence"]
+            local_context["recurrence_history"] = opportunity.get("_recurrence_history", {})
 
-        # ✅ NEW: Calibrate confidence against measured accuracy
+        # Reason — specialist calls memory.analyze_patterns() internally
+        decision = await specialist.reason(opportunity, evidence, local_context)
+
+        # Calibrate confidence against measured accuracy
         stated = decision.get("confidence", 0.5)
-        opp_type = opportunity.get("type", "unknown")
-        action_name = decision.get("action", {}).get("name")
+        action_name = (decision.get("action") or {}).get("name")
 
         adjusted_confidence, calibration_note = await self.calibration.adjust(
             stated_confidence=stated,
@@ -506,28 +509,15 @@ class Orchestrator:
         decision["confidence"] = adjusted_confidence
         decision["calibration_note"] = calibration_note
 
-                # ✅ Record calibration data
-        if verification_result and decision.get("stated_confidence") is not None:
-            try:
-                await self.client.record_calibration(
-                    brand_id=self.brand_id,
-                    stated_confidence=decision["stated_confidence"],
-                    opportunity_type=opp_type,
-                    action_name=action_name,
-                    was_successful=verification_result.get("was_successful", False),
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record calibration: {e}")
-
-        # Safety policy
+        # Safety policy (single evaluation point)
         safety_result = self.safety.evaluate({
-            "action_name": decision.get("action", {}).get("name", "unknown"),
+            "action_name": action_name or "unknown",
             "brand_id": self.brand_id,
-            "confidence": decision.get("confidence", 0.0),
+            "confidence": adjusted_confidence,
             "estimated_impact": decision.get("estimated_impact", 0),
         })
 
-        # Execute or approve
+        # Execute or queue for approval
         if safety_result.get("autonomous", False):
             execution_result = await self.executor.execute(decision, self.brand_id)
         else:
@@ -537,17 +527,31 @@ class Orchestrator:
                 "decision": decision,
             }
 
-        # Register multi-phase verification
+        # Schedule verification (only if something actually executed)
+        verification_result = None
         if execution_result.get("status") == "executed":
             verification_result = await self.verifier.verify_immediate(
                 execution_result, self.brand_id
             )
 
-        # Learn
-        if verification_result:
+        # Learn from what happened. Two different paths:
+        #  - If verification was scheduled, we record the decision now and let
+        #    later cycles record the actual outcome via calibration/learning.
+        #  - If execution required approval or failed, we record a distinct entry.
+        try:
             await self.learner.record(
-                opportunity, decision, execution_result, verification_result, self.brand_id
+                opportunity, decision, execution_result,
+                verification_result or {}, self.brand_id,
             )
+        except Exception as e:
+            logger.warning(f"Failed to record learning: {e}")
+
+        # Record calibration against the OUTCOME, not the schedule.
+        # Immediate verification doesn't know if we succeeded yet — only
+        # hour_1/day_1 do. So we record calibration later (in run_due_verifications),
+        # NOT here. See note below.
+        #
+        # (Calibration is recorded by the verifier after hour_1/day_1 completes.)
 
         return {
             "opportunity": opportunity,
@@ -556,7 +560,7 @@ class Orchestrator:
             "execution": execution_result,
             "verification": verification_result,
         }
-
+        
     async def _monitor(self) -> List[Dict]:
         """Monitor for opportunities."""
         result_str = await monitor_opportunities(self.brand_id)
@@ -579,24 +583,13 @@ class Orchestrator:
         return recurrence >= ESCALATION_THRESHOLD
 
     async def _fetch_history(self, stable_key: str) -> dict:
-        """Fetch prior attempts + any human escalation response."""
+        """Fetch prior attempts for a recurring opportunity."""
         try:
-            history = await self.client.get_opportunity_history(self.brand_id, stable_key)
-
-            # Fetch any escalation response for this stable_key
-            try:
-                esc_resp = await self.client._request(
-                    "GET", f"/agent/escalations/{self.brand_id}"
-                )
-                # (Skip for now — future improvement)
-            except Exception:
-                pass
-
-            return history
+            return await self.client.get_opportunity_history(self.brand_id, stable_key)
         except Exception as e:
             logger.warning(f"Failed to fetch history for {stable_key}: {e}")
             return {"attempts": [], "summary": {"total_attempts": 0}}
-
+        
     async def _handle_escalation_response(self, outcome: dict):
         """Human responded to an escalation — act on it."""
         action_id = outcome.get("action_id")

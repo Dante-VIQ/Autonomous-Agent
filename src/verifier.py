@@ -15,29 +15,58 @@ class Verifier:
         self.client = api_client or LaravelApiClient()
 
     async def verify_immediate(self, execution_result: Dict, brand_id: int) -> Dict:
-        """Immediate verification after action execution."""
+        """
+        Immediate verification: register the multi-phase schedule and snapshot
+        metrics at execution time. This does NOT decide success — that happens
+        at hour_1 and day_1. So was_successful is None here, not False.
+        """
         action = execution_result.get("action", {}) or {}
         action_name = action.get("name", "unknown")
         action_id = execution_result.get("action_id")
 
         if not action_id:
             logger.warning("No action_id in execution result — skipping verification")
-            return {"success": False, "reason": "no action_id"}
+            return {
+                "success": False,
+                "was_successful": None,
+                "reason": "no action_id",
+                "improvement_score": 0.0,
+            }
 
-        # Register verification schedule in Laravel
+        # Snapshot current metrics — this is what hour_1/day_1 will compare against
+        try:
+            before_metrics = await self._fetch_current_metrics(brand_id, execution_result)
+        except Exception as e:
+            logger.warning(f"Could not snapshot metrics for {action_id}: {e}")
+            before_metrics = {}
+
         try:
             schedule = await self.client.register_verification(
                 brand_id=brand_id,
                 action_id=action_id,
                 action_name=action_name,
-                metrics=execution_result.get("before_metrics"),
+                metrics=before_metrics,
             )
             logger.info(f"📅 Verification scheduled for action {action_id}")
-            return {"success": True, "schedule": schedule}
+            return {
+                "success": True,
+                "was_successful": None,   # unknown until hour_1/day_1
+                "scheduled": True,
+                "action_id": action_id,
+                "action_name": action_name,
+                "schedule": schedule,
+                "before_metrics": before_metrics,
+                "improvement_score": 0.0,
+            }
         except Exception as e:
             logger.warning(f"Failed to register verification: {e}")
-            return {"success": False, "reason": str(e)}
-
+            return {
+                "success": False,
+                "was_successful": None,
+                "reason": str(e),
+                "improvement_score": 0.0,
+            }
+            
     async def run_due_verifications(self, brand_id: int) -> Dict:
         """Check for and run any due hour_1/day_1 verifications."""
         try:
@@ -101,24 +130,60 @@ class Verifier:
             return False
 
     async def _fetch_current_metrics(self, brand_id: int, item: dict) -> Dict:
-        """Fetch metrics appropriate for the action type."""
+        """
+        Fetch metrics appropriate for the action type. Each action has
+        different success signals — a lead follow-up is not measured the same
+        way as a content generation or a campaign pause.
+        """
+        action_name = (item.get("action") or {}).get("name", "unknown")
+
         try:
             analytics = await self.client.get_analytics(brand_id)
-            return {
-                "impressions": analytics.get("pageViews", 0),
-                "clicks": analytics.get("visitors", 0),
-                "conversion_rate": analytics.get("conversions", 0),
-                "spend": analytics.get("revenue", 0),
-                "roi": analytics.get("revenue", 0),
-                "indexed_pages": analytics.get("pageViews", 0),
-                "ranking_position": 0,
-                "reply_rate": 0,
-                "engagement": analytics.get("visitors", 0),
-            }
         except Exception as e:
-            logger.warning(f"Failed to fetch metrics: {e}")
-            return {}
+            logger.warning(f"Failed to fetch analytics for verification: {e}")
+            analytics = {}
 
+        visitors = analytics.get("visitors", 0) or 0
+        page_views = analytics.get("pageViews", 0) or 0
+        conversions = analytics.get("conversions", 0) or 0
+        revenue = analytics.get("revenue", 0) or 0
+
+        if action_name in ("notify_lead_response",):
+            return {
+                "leads_contacted": 1,                 # this action contacted one lead
+                "leads_responded": 0,                 # filled in at verification time
+                "lead_value": 0,
+            }
+
+        if action_name in ("trigger_content_generation", "create_blog_post", "generate_content"):
+            return {
+                "content_views": page_views,
+                "content_conversions": conversions,
+                "content_revenue": revenue,
+            }
+
+        if action_name in ("resolve_seo_issue", "run_site_scan"):
+            return {
+                "organic_visitors": visitors,
+                "organic_page_views": page_views,
+                "indexed_pages": 0,
+                "open_seo_issues": 0,
+            }
+
+        if action_name in ("pause_campaign", "adjust_campaign"):
+            return {
+                "campaign_spend": revenue,   # if paused correctly, this should not increase
+                "campaign_revenue": revenue,
+            }
+
+        # Fallback: generic traffic snapshot
+        return {
+            "visitors": visitors,
+            "page_views": page_views,
+            "conversions": conversions,
+            "revenue": revenue,
+        }
+        
     def _compute_deltas(self, before: Dict, after: Dict) -> Dict:
         deltas = {}
         for key in set(before.keys()) | set(after.keys()):
