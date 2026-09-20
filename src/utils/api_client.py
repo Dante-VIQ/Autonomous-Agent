@@ -313,6 +313,7 @@ class LaravelApiClient:
             "metric_deltas":     metric_deltas,
             "was_successful":    was_successful,
             "improvement_score": improvement_score,
+            "attribution":       attribution,
         })
 
     async def rollback_action(self, action_id: int, reason: str) -> Dict:
@@ -355,3 +356,8 @@ class LaravelApiClient:
             "action_name": action_name,
             "was_successful": was_successful,
         })
+        
+        
+    async def get_action_metrics(self, brand_id: int, action_id: int) -> Dict:
+        """Fetch current metrics + attribution hint for an action."""
+        return await self._request("GET", f"/agent/metrics/{brand_id}/{action_id}")

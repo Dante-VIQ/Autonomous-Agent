@@ -262,6 +262,7 @@ class Orchestrator:
         else:
             logger.debug(f"   Skipping unknown status: {status}")
             
+                      
     async def _filter_new_opportunities(self, opportunities: list):
         """Compute fingerprints, ask Laravel which are new, return filtered list."""
         from .utils.fingerprints import fingerprint, stable_key
@@ -601,6 +602,8 @@ class Orchestrator:
 
         if response == "resolve":
             # Mark all tracking rows for this stable_key as resolved
+            # In _handle_escalation_response, when response == "resolve":
+            await self.client.resolve_opportunity(self.brand_id, stable_key)
             logger.info(f"   ✅ Human resolved {stable_key}. No further retries.")
             # (Optional: emit a Laravel call to mark tracking as resolved)
 

@@ -35,7 +35,8 @@ class Verifier:
 
         # Snapshot current metrics — this is what hour_1/day_1 will compare against
         try:
-            before_metrics = await self._fetch_current_metrics(brand_id, execution_result)
+            resp = await self.client.get_action_metrics(brand_id, action_id)
+            before_metrics = resp.get("metrics", {})
         except Exception as e:
             logger.warning(f"Could not snapshot metrics for {action_id}: {e}")
             before_metrics = {}
@@ -100,14 +101,29 @@ class Verifier:
         action_name = item.get("action_name", "unknown")
 
         try:
-            metrics_after = await self._fetch_current_metrics(brand_id, item)
+            resp = await self.client.get_action_metrics(brand_id, action_id)
         except Exception as e:
             logger.warning(f"Failed to fetch metrics for action {action_id}: {e}")
             return False
 
+        metrics_after = resp.get("metrics", {})
+        attribution = resp.get("attribution", "unknown")
+
         deltas = self._compute_deltas(metrics_before, metrics_after)
         improvement = self._score_improvement(deltas)
-        was_successful = improvement >= 0.05  # 5% threshold
+
+        # Honest success logic:
+        #  - If human did the fix (attribution=human): inconclusive, don't credit agent
+        #  - If mixed: also inconclusive
+        #  - Only agent or unknown proceeds to success test
+        if attribution in ("human", "mixed"):
+            was_successful = None
+            logger.info(
+                f"⚠️  Action {action_id} ({phase}): attribution={attribution}, "
+                f"marking inconclusive"
+            )
+        else:
+            was_successful = improvement >= 0.05
 
         try:
             await self.client.record_verification(
@@ -119,71 +135,49 @@ class Verifier:
                 metric_deltas=deltas,
                 was_successful=was_successful,
                 improvement_score=improvement,
+                attribution=attribution,
             )
             logger.info(
                 f"✅ Verified action {action_id} ({phase}): "
-                f"{'success' if was_successful else 'failure'} (score: {improvement:.2%})"
+                f"{'inconclusive' if was_successful is None else ('success' if was_successful else 'failure')} "
+                f"(score: {improvement:.2%}, attribution: {attribution})"
             )
+
+            # Patch 12: record learning after verification
+            try:
+                await self.client.record_learning(brand_id, {
+                    "action_name": action_name,
+                    "opportunity_type": item.get("opportunity_type", "unknown"),
+                    "severity": "medium",
+                    "confidence": item.get("stated_confidence", 0.5),
+                    "was_autonomous": True,
+                    "was_successful": bool(was_successful) if was_successful is not None else False,
+                    "improvement_percentage": improvement * 100,
+                    "duration_seconds": 0,
+                    "context": {
+                        "phase": phase,
+                        "action_id": action_id,
+                        "attribution": attribution,
+                        "metrics_before": metrics_before,
+                        "metrics_after": metrics_after,
+                        "deltas": deltas,
+                    },
+                    "learning_type": (
+                        "inconclusive" if was_successful is None
+                        else "significant_success" if improvement > 0.15
+                        else "moderate_success" if improvement > 0.05
+                        else "marginal_success" if was_successful
+                        else "failure"
+                    ),
+                })
+            except Exception as e:
+                logger.warning(f"Failed to record learning after {phase}: {e}")
+
             return True
         except Exception as e:
             logger.warning(f"Failed to record verification: {e}")
             return False
-
-    async def _fetch_current_metrics(self, brand_id: int, item: dict) -> Dict:
-        """
-        Fetch metrics appropriate for the action type. Each action has
-        different success signals — a lead follow-up is not measured the same
-        way as a content generation or a campaign pause.
-        """
-        action_name = (item.get("action") or {}).get("name", "unknown")
-
-        try:
-            analytics = await self.client.get_analytics(brand_id)
-        except Exception as e:
-            logger.warning(f"Failed to fetch analytics for verification: {e}")
-            analytics = {}
-
-        visitors = analytics.get("visitors", 0) or 0
-        page_views = analytics.get("pageViews", 0) or 0
-        conversions = analytics.get("conversions", 0) or 0
-        revenue = analytics.get("revenue", 0) or 0
-
-        if action_name in ("notify_lead_response",):
-            return {
-                "leads_contacted": 1,                 # this action contacted one lead
-                "leads_responded": 0,                 # filled in at verification time
-                "lead_value": 0,
-            }
-
-        if action_name in ("trigger_content_generation", "create_blog_post", "generate_content"):
-            return {
-                "content_views": page_views,
-                "content_conversions": conversions,
-                "content_revenue": revenue,
-            }
-
-        if action_name in ("resolve_seo_issue", "run_site_scan"):
-            return {
-                "organic_visitors": visitors,
-                "organic_page_views": page_views,
-                "indexed_pages": 0,
-                "open_seo_issues": 0,
-            }
-
-        if action_name in ("pause_campaign", "adjust_campaign"):
-            return {
-                "campaign_spend": revenue,   # if paused correctly, this should not increase
-                "campaign_revenue": revenue,
-            }
-
-        # Fallback: generic traffic snapshot
-        return {
-            "visitors": visitors,
-            "page_views": page_views,
-            "conversions": conversions,
-            "revenue": revenue,
-        }
-        
+                     
     def _compute_deltas(self, before: Dict, after: Dict) -> Dict:
         deltas = {}
         for key in set(before.keys()) | set(after.keys()):
