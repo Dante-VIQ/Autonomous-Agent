@@ -45,62 +45,100 @@ The system runs every 15 minutes and only surfaces when human judgment is needed
 This system coordinates a supervisor, specialist agents, decision logic, execution, verification, and learning.
 
 ```mermaid
-flowchart TB
-    subgraph "Vumbi AI System"
-        subgraph "Supervisor Layer"
-            S[Supervisor Agent<br/>Strands Agent]
-            S -->|monitor_opportunities| M[Monitor]
-            S -->|delegate_to_specialist| D[Delegate]
-        end
+flowchart TD
 
-        subgraph "Specialist Layer"
-            D --> SEO[SEO Specialist<br/>Strands Agent]
-            D --> LEAD[Lead Specialist<br/>Strands Agent]
-            D --> CONTENT[Content Specialist<br/>Strands Agent]
-            D --> ANALYTICS[Analytics Specialist<br/>Strands Agent]
-        end
+subgraph group_runtime["Runtime Coordination"]
+  node_main["Agent Cycle<br/>[main.py]"]
+  node_orchestrator["Supervisor Orchestrator<br/>[orchestrator.py]"]
+  node_monitor["Opportunity Monitor<br/>[monitor.py]"]
+end
 
-        subgraph "Core Intelligence"
-            SEO --> ID[IntelligentDecisionTool]
-            LEAD --> ID
-            CONTENT --> ID
-            ANALYTICS --> ID
-            ID --> GEM[GeminiReasoningService]
-            ID --> MEM[ExperienceMemory]
-            ID --> SAF[SafetyPolicy]
-        end
+subgraph group_specialists["Marketing Specialists"]
+  node_seo["SEO Specialist<br/>[seo.py]"]
+  node_leads["Lead Specialist<br/>[leads.py]"]
+  node_content["Content Specialist<br/>[content.py]"]
+  node_analytics["Analytics Specialist<br/>[analytics.py]"]
+end
 
-        subgraph "Execution & Verification"
-            ID --> EXEC[ExecuteTool]
-            EXEC --> VERIFY[VerifyTool]
-            VERIFY --> LEARN[LearnTool]
-            VERIFY --> ROLLBACK[RollbackEngine]
-        end
+subgraph group_intelligence["Decision Governance"]
+  node_specialist_base["Specialist Reasoning<br/>[base.py]"]
+  node_memory[("Experience Memory<br/>[experience.py]")]
+  node_safety["Safety Policy<br/>[safety.py]"]
+end
 
-        subgraph "Backend"
-            EXEC --> API[Laravel API]
-            API --> DB[(Database)]
-            LEARN --> DB
-        end
+subgraph group_execution["Execution Learning"]
+  node_executor["Action Executor<br/>[executor.py]"]
+  node_verifier["Outcome Verifier<br/>[verifier.py]"]
+  node_learner["Learning Recorder<br/>[learner.py]"]
+  node_rollback["Rollback Engine<br/>[executor.py]"]
+end
 
-        subgraph "Human Interface"
-            SAF -->|High Risk| REVIEW[Human Review Queue]
-            REVIEW -->|Approve| EXEC
-            REVIEW -->|Reject| LEARN
-        end
-    end
+subgraph group_backend["Backend Integration"]
+  node_api_client["Laravel API Client<br/>[api_client.py]"]
+  node_laravel["Laravel Backend"]
+  node_backend_db[("Marketing Database")]
+end
 
-    classDef supervisor fill:#4CAF50,color:white,stroke:#2E7D32
-    classDef specialist fill:#2196F3,color:white,stroke:#0D47A1
-    classDef core fill:#FF9800,color:white,stroke:#E65100
-    classDef backend fill:#9C27B0,color:white,stroke:#4A148C
-    classDef human fill:#F44336,color:white,stroke:#B71C1C
+node_operator(("Business Owner"))
+node_gemini["Gemini Model"]
+node_human_review(("Human Review"))
 
-    class S,M,D supervisor
-    class SEO,LEAD,CONTENT,ANALYTICS specialist
-    class ID,GEM,MEM,SAF,EXEC,VERIFY,LEARN,ROLLBACK core
-    class API,DB backend
-    class REVIEW human
+node_main -->|"runs cycle"| node_orchestrator
+node_orchestrator -->|"scans opportunities"| node_monitor
+node_orchestrator -->|"gathers evidence"| node_api_client
+node_orchestrator -->|"delegates SEO"| node_seo
+node_orchestrator -->|"delegates leads"| node_leads
+node_orchestrator -->|"delegates content"| node_content
+node_orchestrator -->|"delegates analytics"| node_analytics
+node_seo -->|"reasons"| node_specialist_base
+node_leads -->|"reasons"| node_specialist_base
+node_content -->|"reasons"| node_specialist_base
+node_analytics -->|"reasons"| node_specialist_base
+node_specialist_base -->|"requests decision"| node_gemini
+node_specialist_base -->|"analyzes patterns"| node_memory
+node_specialist_base -->|"checks action"| node_safety
+node_orchestrator -->|"submits action"| node_executor
+node_executor -->|"executes remotely"| node_api_client
+node_safety -.->|"requests approval"| node_human_review
+node_human_review -.->|"approves action"| node_executor
+node_executor -->|"triggers verification"| node_verifier
+node_verifier -->|"measures outcome"| node_api_client
+node_verifier -->|"requests rollback"| node_rollback
+node_rollback -->|"reverses action"| node_api_client
+node_verifier -->|"reports outcome"| node_learner
+node_learner -->|"records learning"| node_memory
+node_api_client -->|"calls backend"| node_laravel
+node_laravel -->|"reads writes"| node_backend_db
+node_operator -.->|"reviews decisions"| node_human_review
+
+click node_main "https://github.com/dante-viq/autonomous-agent/blob/main/src/main.py"
+click node_orchestrator "https://github.com/dante-viq/autonomous-agent/blob/main/src/orchestrator.py"
+click node_monitor "https://github.com/dante-viq/autonomous-agent/blob/main/src/tools/monitor.py"
+click node_seo "https://github.com/dante-viq/autonomous-agent/blob/main/src/specialists/seo.py"
+click node_leads "https://github.com/dante-viq/autonomous-agent/blob/main/src/specialists/leads.py"
+click node_content "https://github.com/dante-viq/autonomous-agent/blob/main/src/specialists/content.py"
+click node_analytics "https://github.com/dante-viq/autonomous-agent/blob/main/src/specialists/analytics.py"
+click node_specialist_base "https://github.com/dante-viq/autonomous-agent/blob/main/src/specialists/base.py"
+click node_memory "https://github.com/dante-viq/autonomous-agent/blob/main/src/memory/experience.py"
+click node_safety "https://github.com/dante-viq/autonomous-agent/blob/main/src/policies/safety.py"
+click node_executor "https://github.com/dante-viq/autonomous-agent/blob/main/src/executor.py"
+click node_verifier "https://github.com/dante-viq/autonomous-agent/blob/main/src/verifier.py"
+click node_learner "https://github.com/dante-viq/autonomous-agent/blob/main/src/learner.py"
+click node_rollback "https://github.com/dante-viq/autonomous-agent/blob/main/src/executor.py"
+click node_api_client "https://github.com/dante-viq/autonomous-agent/blob/main/src/utils/api_client.py"
+
+classDef toneNeutral fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a
+classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
+classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
+classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
+classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
+classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
+classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
+class node_main,node_orchestrator,node_monitor,node_human_review toneBlue
+class node_seo,node_leads,node_content,node_analytics toneAmber
+class node_specialist_base,node_memory,node_safety toneMint
+class node_executor,node_verifier,node_learner,node_rollback toneRose
+class node_api_client,node_laravel,node_backend_db,node_operator,node_gemini toneIndigo
 ```
 
 ---

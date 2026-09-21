@@ -133,6 +133,16 @@ class LaravelApiClient:
     async def get_analytics(self, brand_id: int) -> Dict:
         return await self._request("GET", f"/agent/analytics/{brand_id}")
 
+    async def get_action_count(
+        self, brand_id: int, category: str, window_seconds: int = 3600
+    ) -> Dict:
+        """How many actions of this category fired in the last N seconds."""
+        return await self._request(
+            "GET",
+            f"/agent/actions/count/{brand_id}"
+            f"?category={category}&window={window_seconds}",
+        )
+        
     # ============ HUMAN OUTCOMES ============
 
     async def get_pending_outcomes(self, brand_id: int) -> Dict:
@@ -281,25 +291,21 @@ class LaravelApiClient:
         return await self._request("GET", endpoint)
     
 
-    async def rollback_action(self, action_id: str, brand_id: int, action_name: str) -> Dict:
-        return await self._request("POST", f"/agent/rollback/log", {
-        "action_id": action_id,
-        "action_name": action_name,
-        "brand_id": brand_id
-    })
-
         # ============ VERIFICATION ============
 
     async def register_verification(self, brand_id: int, action_id: int,
-        action_name: str, metrics: dict = None) -> Dict:
-        return await self._request("POST", "/agent/verification/register", {
+        action_name: str, metrics: dict = None,
+        stated_confidence: float = None) -> Dict:
+        payload = {
             "brand_id":             brand_id,
             "action_id":            action_id,
             "action_name":          action_name,
             "metrics_at_execution": metrics,
-        })
-
-
+        }
+        if stated_confidence is not None:
+            payload["stated_confidence"] = stated_confidence
+        return await self._request("POST", "/agent/verification/register", payload)
+    
     async def record_verification(self, brand_id: int, action_id: int, phase: str,
             metrics_after: dict, was_successful: bool,
             metrics_before: dict = None, improvement_score: float = None,
@@ -316,8 +322,9 @@ class LaravelApiClient:
             "attribution":       attribution,
         })
 
-    async def rollback_action(self, action_id: int, reason: str) -> Dict:
-        return await self._request("POST", f"/agent/actions/{action_id}/rollback", {
+    async def request_rollback(self, action_id: int, reason: str) -> Dict:
+        """Request a rollback. This marks intent — it does not undo the action."""
+        return await self._request("POST", f"/agent/actions/{action_id}/request-rollback", {
             "reason": reason,
         })
 

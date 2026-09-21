@@ -108,7 +108,8 @@ class SafetyPolicy:
         brand_id = request.get("brand_id")
         estimated_impact = request.get("estimated_impact")
         confidence = request.get("confidence", 0.0)
-        
+        recent_count = request.get("recent_count")  # optional, from orchestrator
+
         policy = self.policies.get(action_name)
         
         if not policy:
@@ -140,7 +141,21 @@ class SafetyPolicy:
                 "reason": f"Estimated impact ${estimated_impact} exceeds limit ${policy.max_impact}.",
                 "risk_level": policy.risk_level
             }
-        
+            
+                # ─── Frequency check ───
+        if policy.max_frequency_per_hour and recent_count is not None:
+            if recent_count >= policy.max_frequency_per_hour:
+                return {
+                    "allowed": False,
+                    "autonomous": False,
+                    "requires_approval": True,
+                    "reason": (
+                        f"Hourly cap reached for {action_name} "
+                        f"({recent_count}/{policy.max_frequency_per_hour})."
+                    ),
+                    "risk_level": policy.risk_level,
+                }
+                
         # Confidence check for actions that require reasoning
         if policy.requires_reasoning and confidence < Config.AUTONOMOUS_THRESHOLD:
             return {

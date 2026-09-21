@@ -21,6 +21,13 @@ CRITICAL_ESCALATION_THRESHOLD = 2
 logger = logging.getLogger(__name__)
 
 
+def _strip_internal(d: Dict) -> Dict:
+    """Remove keys starting with '_' to prevent circular refs at JSON serialization."""
+    if not isinstance(d, dict):
+        return d
+    return {k: v for k, v in d.items() if not k.startswith("_")}
+
+
 class Orchestrator:
     def __init__(self, brand_id: int):
         self.brand_id = brand_id
@@ -35,7 +42,6 @@ class Orchestrator:
         self.executor = Executor()
         self.learner = Learner()
 
-        # ✅ These three lines must be present
         self.client = LaravelApiClient()
         self.memory = ExperienceMemory()
         self.verifier = Verifier(self.client)
@@ -61,8 +67,7 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"   ⚠  Freshness check failed (continuing): {e}")
 
-
-                    # 0.5. FETCH DAILY BRIEF
+            # 0.5. FETCH DAILY BRIEF
             logger.info("📋 FETCHING DAILY BRIEF")
             try:
                 brief_response = await self.client.get_brief(self.brand_id)
@@ -96,7 +101,7 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"   ⚠  Tours fetch failed: {e}")
                 self.context["tours"] = []
-                
+
             # 1. PROCESS HUMAN OUTCOMES
             logger.info("📬 PROCESSING HUMAN OUTCOMES")
             try:
@@ -105,7 +110,7 @@ class Orchestrator:
                 logger.warning(f"   ⚠  Outcomes processing failed: {e}")
                 outcomes_processed = 0
 
-            # 1.5. RUN DUE VERIFICATIONS (Phase 6)
+            # 1.5. RUN DUE VERIFICATIONS
             logger.info("🔍 CHECKING VERIFICATIONS")
             try:
                 due_results = await self.verifier.run_due_verifications(self.brand_id)
@@ -193,19 +198,12 @@ class Orchestrator:
 
         for outcome in outcomes:
             action_id = outcome.get("action_id")
-            status = outcome.get("status")
-
             try:
-                # Handle escalation responses FIRST
                 if outcome.get("human_response"):
                     await self._handle_escalation_response(outcome)
-                    handled_ids.append(action_id)
-                    continue
-
-                # Otherwise, handle by status
-                await self._handle_outcome(outcome)
+                else:
+                    await self._handle_outcome(outcome)
                 handled_ids.append(action_id)
-
             except Exception as e:
                 logger.error(f"   ❌ Failed to handle outcome {action_id}: {e}")
 
@@ -261,8 +259,7 @@ class Orchestrator:
 
         else:
             logger.debug(f"   Skipping unknown status: {status}")
-            
-                      
+
     async def _filter_new_opportunities(self, opportunities: list):
         """Compute fingerprints, ask Laravel which are new, return filtered list."""
         from .utils.fingerprints import fingerprint, stable_key
@@ -305,7 +302,7 @@ class Orchestrator:
         opp_type = opportunity.get("type", "unknown")
         recurrence = fp_info.get("recurrence_count", 1)
 
-        # Mark as processing
+        # Mark as processing (opportunity has no internal keys yet)
         try:
             await self.client.mark_opportunity(
                 brand_id=self.brand_id,
@@ -313,7 +310,7 @@ class Orchestrator:
                 stable_key=stable_key_val,
                 opportunity_type=opp_type,
                 status="processing",
-                opportunity_data=opportunity,
+                opportunity_data=_strip_internal(opportunity),
             )
         except Exception as e:
             logger.warning(f"Failed to mark opportunity as processing: {e}")
@@ -325,11 +322,11 @@ class Orchestrator:
                 result = await self._escalate_opportunity(opportunity, fp_info, stable_key_val)
                 status_to_mark = "escalated"
             else:
-                # --- INJECT RECURRENCE INTO OPPORTUNITY (per-opportunity) ---
+                # --- INJECT RECURRENCE (per-opportunity, defensive copies) ---
                 if recurrence > 1:
                     logger.info(f"   🔁 Recurrence #{recurrence} — fetching history")
                     history = await self._fetch_history(stable_key_val)
-                    opportunity["_recurrence"] = fp_info
+                    opportunity["_recurrence"] = dict(fp_info)
                     opportunity["_recurrence_history"] = history
 
                 result = await self._process_opportunity(opportunity, evidence)
@@ -348,7 +345,7 @@ class Orchestrator:
                     stable_key=stable_key_val,
                     opportunity_type=opp_type,
                     status=status_to_mark,
-                    opportunity_data=opportunity,
+                    opportunity_data=_strip_internal(opportunity),
                     action_id=action_id,
                 )
             except Exception as e:
@@ -365,12 +362,12 @@ class Orchestrator:
                     stable_key=stable_key_val,
                     opportunity_type=opp_type,
                     status="failed",
-                    opportunity_data=opportunity,
+                    opportunity_data=_strip_internal(opportunity),
                 )
             except Exception as mark_err:
                 logger.warning(f"Failed to mark opportunity as failed: {mark_err}")
             return {"success": False, "error": str(e)}
-        
+
     async def _escalate_opportunity(self, opportunity, fp_info, stable_key: str):
         """Create an escalation action for a human."""
         history = await self._fetch_history(stable_key)
@@ -380,7 +377,6 @@ class Orchestrator:
         recurrence = fp_info.get("recurrence_count", 1)
         title = opportunity.get("title", "Unknown recurring issue")
 
-        # Build description
         first_seen = summary.get("first_seen", "unknown")
         total = summary.get("total_attempts", recurrence)
         successful = summary.get("successful", 0)
@@ -398,19 +394,17 @@ class Orchestrator:
             "Human investigation needed to identify the root cause."
         )
 
-        # Priority based on recurrence
         priority = min(5, max(3, recurrence // 2))
 
         payload = {
             "stable_key": stable_key,
             "recurrence_count": total,
             "first_seen": first_seen,
-            "prior_attempts": attempts[-5:],  # last 5 attempts
+            "prior_attempts": attempts[-5:],
             "rejection_reasons": rejection_reasons,
             "expected_decision": "investigate_root_cause",
         }
 
-        # Send to Laravel
         try:
             result = await self.client.create_pending_action(
                 self.brand_id,
@@ -477,16 +471,18 @@ class Orchestrator:
             logger.warning(f"⏭️ No specialist for opportunity type '{opp_type}', skipping")
             return {"success": False, "message": f"No specialist for {opp_type}"}
 
-        # Build a per-opportunity context (no shared state leaks)
+        # Build a per-opportunity context with defensive copies.
+        # Recurrence keys are copied so no shared reference exists across dicts.
         local_context = {
             "brand_id": self.brand_id,
             "brief": self.context.get("brief", {}),
             "tours": self.context.get("tours", []),
         }
-        # Attach recurrence info ONLY if this opportunity is recurring
         if opportunity.get("_recurrence"):
-            local_context["recurrence"] = opportunity["_recurrence"]
-            local_context["recurrence_history"] = opportunity.get("_recurrence_history", {})
+            local_context["recurrence"] = dict(opportunity["_recurrence"])
+            local_context["recurrence_history"] = dict(
+                opportunity.get("_recurrence_history", {}) or {}
+            )
 
         # Reason — specialist calls memory.analyze_patterns() internally
         decision = await specialist.reason(opportunity, evidence, local_context)
@@ -510,15 +506,28 @@ class Orchestrator:
         decision["confidence"] = adjusted_confidence
         decision["calibration_note"] = calibration_note
 
+        # Fetch recent action count for frequency enforcement.
+        # Silently degrade to None if the call fails — safety policy will
+        # skip the frequency check rather than crash.
+        recent_count = None
+        try:
+            count_resp = await self.client.get_action_count(
+                self.brand_id, action_name or "unknown"
+            )
+            recent_count = count_resp.get("count")
+        except Exception as e:
+            logger.warning(f"Failed to fetch action count for {action_name}: {e}")
+
         # Safety policy (single evaluation point)
         safety_result = self.safety.evaluate({
             "action_name": action_name or "unknown",
             "brand_id": self.brand_id,
             "confidence": adjusted_confidence,
             "estimated_impact": decision.get("estimated_impact", 0),
+            "recent_count": recent_count,
         })
-
-        # Execute or queue for approval
+        
+        # Execute or approve
         if safety_result.get("autonomous", False):
             execution_result = await self.executor.execute(decision, self.brand_id)
         else:
@@ -528,6 +537,9 @@ class Orchestrator:
                 "decision": decision,
             }
 
+        # Attach stated confidence so verify_immediate can register it with Laravel.
+        execution_result["stated_confidence"] = decision.get("stated_confidence")
+
         # Schedule verification (only if something actually executed)
         verification_result = None
         if execution_result.get("status") == "executed":
@@ -535,33 +547,25 @@ class Orchestrator:
                 execution_result, self.brand_id
             )
 
-        # Learn from what happened. Two different paths:
-        #  - If verification was scheduled, we record the decision now and let
-        #    later cycles record the actual outcome via calibration/learning.
-        #  - If execution required approval or failed, we record a distinct entry.
+        # Strip internal-only keys to prevent circular refs at serialization.
+        clean_opportunity = _strip_internal(opportunity)
+
         try:
             await self.learner.record(
-                opportunity, decision, execution_result,
+                clean_opportunity, decision, execution_result,
                 verification_result or {}, self.brand_id,
             )
         except Exception as e:
             logger.warning(f"Failed to record learning: {e}")
 
-        # Record calibration against the OUTCOME, not the schedule.
-        # Immediate verification doesn't know if we succeeded yet — only
-        # hour_1/day_1 do. So we record calibration later (in run_due_verifications),
-        # NOT here. See note below.
-        #
-        # (Calibration is recorded by the verifier after hour_1/day_1 completes.)
-
         return {
-            "opportunity": opportunity,
+            "opportunity": clean_opportunity,
             "decision": decision,
             "safety": safety_result,
             "execution": execution_result,
             "verification": verification_result,
         }
-        
+
     async def _monitor(self) -> List[Dict]:
         """Monitor for opportunities."""
         result_str = await monitor_opportunities(self.brand_id)
@@ -576,13 +580,17 @@ class Orchestrator:
 
     def _should_escalate(self, fp_info: dict, opportunity: dict) -> bool:
         """Decide if this recurrence should escalate to human."""
+        # Already waiting on a human? Don't escalate again — that's the loop.
+        if fp_info.get("has_pending_escalation"):
+            return False
+
         recurrence = fp_info.get("recurrence_count", 1)
         severity = (opportunity.get("severity") or "medium").lower()
 
         if severity == "critical" and recurrence >= CRITICAL_ESCALATION_THRESHOLD:
             return True
         return recurrence >= ESCALATION_THRESHOLD
-
+    
     async def _fetch_history(self, stable_key: str) -> dict:
         """Fetch prior attempts for a recurring opportunity."""
         try:
@@ -590,7 +598,7 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Failed to fetch history for {stable_key}: {e}")
             return {"attempts": [], "summary": {"total_attempts": 0}}
-        
+
     async def _handle_escalation_response(self, outcome: dict):
         """Human responded to an escalation — act on it."""
         action_id = outcome.get("action_id")
@@ -601,20 +609,15 @@ class Orchestrator:
         logger.info(f"   📬 Escalation {action_id} → {response}")
 
         if response == "resolve":
-            # Mark all tracking rows for this stable_key as resolved
-            # In _handle_escalation_response, when response == "resolve":
-            await self.client.resolve_opportunity(self.brand_id, stable_key)
-            logger.info(f"   ✅ Human resolved {stable_key}. No further retries.")
-            # (Optional: emit a Laravel call to mark tracking as resolved)
+            # TODO: wire `resolve_opportunity` on both sides.
+            # Requires Laravel route + controller method + client method.
+            logger.info(f"   ✅ Human resolved {stable_key} (resolve endpoint not yet wired).")
 
         elif response == "snooze":
             logger.info(f"   ⏸  Snoozed until {outcome.get('snooze_until')}")
 
         elif response == "retry":
             logger.info(f"   🔄 Human wants retry for {stable_key}. Guidance: {notes}")
-            # The next cycle's opportunity will include this guidance via
-            # the recurrence history and the human_response_notes field
 
         elif response == "investigate":
             logger.info(f"   🔍 Human wants deeper investigation for {stable_key}")
-            # Future: agent runs additional diagnostics

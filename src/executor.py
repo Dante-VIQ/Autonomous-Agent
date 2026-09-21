@@ -99,23 +99,23 @@ class Executor:
         else:
             return await func(brand_id)
 
-    async def rollback(self, execution_result: Dict, brand_id: int) -> Dict:
-        """Rollback an executed action."""
+    async def request_rollback(self, execution_result: Dict, brand_id: int) -> Dict:
+        """Request a rollback. Marks intent — does not undo the action."""
         action = execution_result.get("action", {})
         action_name = action.get("name", "unknown")
         action_id = execution_result.get("action_id")
 
         if not action_id:
-            logger.warning(f"Cannot rollback {action_name}: no action_id")
+            logger.warning(f"Cannot request rollback for {action_name}: no action_id")
             return {"success": False, "reason": "no action_id"}
 
-        logger.warning(f"🔄 Rolling back action: {action_name}")
+        logger.warning(f"🔄 Rollback REQUESTED for action: {action_name}")
         try:
-            result = await self.client.rollback_action(
+            result = await self.client.request_rollback(
                 action_id,
-                f"Rollback: {action_name}",
+                f"Rollback requested: {action_name}",
             )
             return {"success": True, "result": result}
         except Exception as e:
-            logger.error(f"Rollback failed: {e}")
+            logger.error(f"Rollback request failed: {e}")
             return {"success": False, "error": str(e)}
