@@ -226,3 +226,37 @@ def test_main_module_imports():
     """The application entry point imports cleanly as a package."""
     module = importlib.import_module('src.main')
     assert hasattr(module, 'run_cycle')
+
+@pytest.mark.asyncio
+async def test_record_verification_sends_attribution(client):
+    """Regression: attribution used to be an undefined name (NameError)."""
+    with respx.mock(base_url=BASE_URL) as mock:
+        route = mock.post("/agent/verification/record").mock(
+            return_value=httpx.Response(200, json={"success": True})
+        )
+        await client.record_verification(
+            1, 7, "immediate", {"clicks": 3}, True, attribution="human"
+        )
+        import json
+        assert json.loads(route.calls.last.request.content)["attribution"] == "human"
+
+
+@pytest.mark.asyncio
+async def test_record_verification_attribution_defaults_to_unknown(client):
+    with respx.mock(base_url=BASE_URL) as mock:
+        route = mock.post("/agent/verification/record").mock(
+            return_value=httpx.Response(200, json={"success": True})
+        )
+        await client.record_verification(1, 7, "immediate", {}, None)
+        import json
+        assert json.loads(route.calls.last.request.content)["attribution"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_get_keyword_rankings_encodes_url(client):
+    with respx.mock(base_url=BASE_URL) as mock:
+        route = mock.get("/agent/seo/rankings/1").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        await client.get_keyword_rankings(1, "https://x.com/a?b=1&c=2")
+        assert route.calls.last.request.url.params["url"] == "https://x.com/a?b=1&c=2"
