@@ -309,7 +309,7 @@ class LaravelApiClient:
     async def record_verification(self, brand_id: int, action_id: int, phase: str,
             metrics_after: dict, was_successful: bool,
             metrics_before: dict = None, improvement_score: float = None,
-            metric_deltas: dict = None) -> Dict:
+            metric_deltas: dict = None, attribution: str = "unknown") -> Dict:
         return await self._request("POST", "/agent/verification/record", {
             "brand_id":          brand_id,
             "action_id":         action_id,
