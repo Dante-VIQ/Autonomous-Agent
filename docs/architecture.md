@@ -9,7 +9,7 @@ graph TB
         STRANDS[Strands Agents SDK]
     end
 
-    subgraph "Strands Agent (TypeScript/Node.js)"
+    subgraph "Strands Agent (Python)"
         direction TB
         A1[Agent Scheduler<br/>Runs every 15 min]
         A2[Agent Loop<br/>Invoke with prompt]

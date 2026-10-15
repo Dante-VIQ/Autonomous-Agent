@@ -1,5 +1,6 @@
 # src/utils/api_client.py
 
+from urllib.parse import quote
 import asyncio
 import httpx
 import logging
@@ -193,7 +194,7 @@ class LaravelApiClient:
     async def get_keyword_rankings(self, brand_id: int, page_url: str = None) -> Dict:
         endpoint = f"/agent/seo/rankings/{brand_id}"
         if page_url:
-            endpoint += f"?url={page_url}"
+            endpoint += "?url=" + quote(page_url, safe="")
         return await self._request("GET", endpoint)
 
     # ============ LEADS ============

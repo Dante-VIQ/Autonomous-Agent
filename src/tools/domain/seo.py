@@ -17,8 +17,6 @@ async def analyze_seo_issue(issue_id: str, brand_id: int) -> str:
     client = LaravelApiClient()
     
     try:
-        analysis = client.analyze_seo_issue(brand_id, issue_id)
-        recommendations = client.get_seo_recommendations(brand_id, issue_id)
         issue = await client.get_seo_issue(brand_id, issue_id)
         analysis = await client.analyze_seo_issue(brand_id, issue_id)
         recommendations = await client.get_seo_recommendations(brand_id, issue_id)
@@ -34,7 +32,7 @@ async def analyze_seo_issue(issue_id: str, brand_id: int) -> str:
         return json.dumps({"success": False, "error": str(e)})
 
 @tool
-def get_ranking_data(page_url: str, brand_id: int) -> str:
+async def get_ranking_data(page_url: str, brand_id: int) -> str:
     """
     Get keyword ranking data for a page.
     Uses REAL data from Vumbi Ventures Laravel backend.
@@ -42,7 +40,7 @@ def get_ranking_data(page_url: str, brand_id: int) -> str:
     client = LaravelApiClient()
     
     try:
-        rankings = client.get_keyword_rankings(brand_id, page_url)
+        rankings = await client.get_keyword_rankings(brand_id, page_url)
         return json.dumps({
             "success": True,
             "page_url": page_url,
