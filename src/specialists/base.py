@@ -113,15 +113,9 @@ class BaseSpecialist:
         response = await self._get_ai_reasoning(prompt)
         decision = self._parse_decision(response)
 
-        safety_result = self.safety.evaluate({
-            "action_name": decision.get("action", {}).get("name", "unknown"),
-            "brand_id": brand_id,
-            "confidence": decision.get("confidence", 0.0),
-            "estimated_impact": decision.get("estimated_impact", 0),
-        })
-        decision["autonomous"] = safety_result.get("autonomous", False)
-        decision["requires_approval"] = safety_result.get("requires_approval", True)
-        decision["safety_reason"] = safety_result.get("reason", "Safety policy applied")
+        # Safety is evaluated once, by the Orchestrator, after confidence
+        # calibration and the frequency-cap lookup. Evaluating here too would
+        # attach flags that can disagree with the real gate.
         return decision
 
     # ============================================================
