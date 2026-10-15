@@ -20,6 +20,20 @@ CRITICAL_ESCALATION_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
 
+# Mirrors the action -> category map in Laravel AgentController::executeAction.
+# ai_actions stores a category, not an action name, so the frequency-cap lookup
+# must query by category (this counts all actions in that category).
+ACTION_CATEGORY = {
+    "trigger_content_generation": "content",
+    "create_blog_post": "content",
+    "generate_content": "content",
+    "resolve_seo_issue": "seo",
+    "run_site_scan": "seo",
+    "notify_lead_response": "strategy",
+    "pause_campaign": "strategy",
+    "adjust_campaign": "strategy",
+}
+
 
 def _strip_internal(d: Dict) -> Dict:
     """Remove keys starting with '_' to prevent circular refs at JSON serialization."""
@@ -512,7 +526,7 @@ class Orchestrator:
         recent_count = None
         try:
             count_resp = await self.client.get_action_count(
-                self.brand_id, action_name or "unknown"
+                self.brand_id, ACTION_CATEGORY.get(action_name, "strategy")
             )
             recent_count = count_resp.get("count")
         except Exception as e:
