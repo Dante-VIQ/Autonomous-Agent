@@ -89,6 +89,7 @@ class Executor:
                 brand_id,
                 payload.get("topic", "Untitled"),
                 payload.get("template", "blog"),
+                action_name=name,
             )
         elif name == "notify_lead_response":
             return await func(brand_id, payload.get("lead_id"))
@@ -98,6 +99,8 @@ class Executor:
                 payload.get("campaign_id"),
                 payload.get("reason", "Paused by AI"),
             )
+        elif name in ("resolve_seo_issue", "run_site_scan"):
+            return await func(brand_id, action_name=name)
         else:
             return await func(brand_id)
 

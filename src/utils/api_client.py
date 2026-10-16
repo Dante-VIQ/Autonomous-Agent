@@ -72,12 +72,19 @@ class LaravelApiClient:
                 raise
 
             except (httpx.ConnectError, httpx.ReadTimeout) as e:
-                # Network errors – retry once
+                # A ReadTimeout means the server may still be processing the request.
+                # Retrying a non-idempotent call (POST) could create duplicate actions
+                # (e.g. content generation), so only GET/HEAD are retried on read
+                # timeouts. ConnectError means the request never arrived: safe for all.
+                if isinstance(e, httpx.ReadTimeout) and method.upper() not in ("GET", "HEAD"):
+                    logger.error(f"⏰ Read timeout on {method} {endpoint}; not retrying (non-idempotent).")
+                    raise
                 attempt += 1
                 if attempt > max_retries:
                     raise
-                logger.warning(f"⚠️  Network error on {endpoint}: {e}. Retrying...")
-                await asyncio.sleep(2)
+                backoff = min(2 ** attempt, 15)
+                logger.warning(f"⚠️  Network error on {endpoint}: {e}. Retry {attempt}/{max_retries} in {backoff}s...")
+                await asyncio.sleep(backoff)
                 continue
 
         # Should never reach here
@@ -135,14 +142,37 @@ class LaravelApiClient:
         return await self._request("GET", f"/agent/analytics/{brand_id}")
 
     async def get_action_count(
-        self, brand_id: int, category: str, window_seconds: int = 3600
+        self, brand_id: int, category: str, window_seconds: int = 3600,
+        action_name: str = None,
     ) -> Dict:
-        """How many actions of this category fired in the last N seconds."""
-        return await self._request(
-            "GET",
+        """How many actions fired in the last N seconds (per action name if given)."""
+        endpoint = (
             f"/agent/actions/count/{brand_id}"
-            f"?category={category}&window={window_seconds}",
+            f"?category={quote(category or '', safe='')}&window={window_seconds}"
         )
+        if action_name:
+            endpoint += f"&action={quote(action_name, safe='')}"
+        return await self._request("GET", endpoint)
+
+    # ============ BRANDS & CYCLE LOG ============
+
+    async def list_brands(self) -> List[Dict]:
+        result = await self._request("GET", "/agent/brands")
+        if isinstance(result, dict):
+            return result.get("brands", [])
+        return result or []
+
+    async def record_cycle_run(
+        self, brand_id: int, status: str, summary: Dict,
+        started_at: str = None, finished_at: str = None,
+    ) -> Dict:
+        return await self._request("POST", "/agent/cycles", {
+            "brand_id": brand_id,
+            "status": status,
+            "summary": summary,
+            "started_at": started_at,
+            "finished_at": finished_at,
+        })
         
     # ============ HUMAN OUTCOMES ============
 
@@ -229,12 +259,13 @@ class LaravelApiClient:
 
     # ============ CONTENT ============
 
-    async def generate_content(self, brand_id: int, topic: str, template: str = "blog") -> Dict:
-        return await self._request("POST", "/agent/content/generate", {
-            "brandId": brand_id,
-            "topic": topic,
-            "template": template,
-        })
+    async def generate_content(
+        self, brand_id: int, topic: str, template: str = "blog", action_name: str = None
+    ) -> Dict:
+        payload = {"brandId": brand_id, "topic": topic, "template": template}
+        if action_name:
+            payload["action_name"] = action_name
+        return await self._request("POST", "/agent/content/generate", payload)
 
     async def analyze_content_gap(self, brand_id: int, topic: str) -> Dict:
         return await self._request("POST", f"/agent/content/gap-analysis/{brand_id}", {"topic": topic})
@@ -254,8 +285,9 @@ class LaravelApiClient:
             "reason": reason,
         })
 
-    async def scan(self, brand_id: int) -> Dict:
-        return await self._request("POST", f"/agent/scan/{brand_id}")
+    async def scan(self, brand_id: int, action_name: str = None) -> Dict:
+        body = {"action_name": action_name} if action_name else None
+        return await self._request("POST", f"/agent/scan/{brand_id}", body)
 
     async def execute_action(self, action_id: int) -> Dict:
         """Execute an approved action (called after human approval)."""

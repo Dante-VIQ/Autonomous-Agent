@@ -12,6 +12,9 @@ class Config:
     
     # ============ Brand ============
     BRAND_ID = int(os.getenv("BRAND_ID", "1"))
+    # "all" = every active brand from Laravel; or a comma list like "1,3,7".
+    # Unset = just BRAND_ID.
+    AGENT_BRANDS = os.getenv("AGENT_BRANDS", "")
     
     # ============ AI Models ============
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://192.168.1.5:11434")
