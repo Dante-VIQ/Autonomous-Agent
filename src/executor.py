@@ -3,6 +3,7 @@
 import asyncio
 import httpx
 import logging
+import time
 from typing import Dict, Any
 from .utils.api_client import LaravelApiClient
 
@@ -18,6 +19,7 @@ class Executor:
         name = action.get("name", "unknown")
         payload = action.get("payload", {})
         logger.info(f"⚡ Executing action: {name}")
+        started = time.monotonic()
 
         try:
             result = await self._route_action(name, payload, brand_id)
@@ -32,7 +34,7 @@ class Executor:
                 "action": action,
                 "action_id": action_id,     # ← top-level for verifier
                 "result": result,
-                "duration": 0,
+                "duration": round(time.monotonic() - started, 3),
             }
             
         except httpx.ReadTimeout:
@@ -41,7 +43,7 @@ class Executor:
                 "status": "timeout",
                 "action": action,
                 "error": "Request timed out – content generation may still be running.",
-                "duration": 0,
+                "duration": round(time.monotonic() - started, 3),
             }
         except Exception as e:
             logger.error(f"❌ Execution failed: {e}", exc_info=True)
@@ -49,7 +51,7 @@ class Executor:
                 "status": "failed",
                 "action": action,
                 "error": str(e),
-                "duration": 0,
+                "duration": round(time.monotonic() - started, 3),
             }
 
     async def _route_action(self, name: str, payload: Dict, brand_id: int) -> Any:

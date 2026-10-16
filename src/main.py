@@ -9,6 +9,7 @@ from typing import Dict, Any
 from .config import Config
 from .orchestrator import Orchestrator
 from .utils.logger import setup_logger
+from .utils.lock import cycle_lock
 
 logger = setup_logger(__name__, Config.LOG_LEVEL)
 
@@ -17,8 +18,14 @@ async def run_cycle() -> Dict[str, Any]:
     from .config import Config
     Config.validate()
     logger.info("🔄 Starting agent cycle...")
-    orchestrator = Orchestrator(Config.BRAND_ID)
-    result = await orchestrator.run_cycle()
+    with cycle_lock(Config.BRAND_ID) as acquired:
+        if not acquired:
+            logger.warning(
+                f"⏭️  Another cycle is already running for brand {Config.BRAND_ID}; skipping"
+            )
+            return {"status": "skipped", "reason": "cycle_already_running"}
+        orchestrator = Orchestrator(Config.BRAND_ID)
+        result = await orchestrator.run_cycle()
     logger.info("✅ Cycle completed")
     return result
 

@@ -28,9 +28,10 @@ class Learner:
             "action_name": (decision.get("action") or {}).get("name", "unknown"),
             "confidence": decision.get("confidence", 0.0),
             "was_autonomous": execution.get("status") == "executed",
-            "was_successful": bool(was_successful) if was_successful is not None else False,
+            # None = outcome unknown (pending or human-attributed); never record as a failure.
+            "was_successful": None if was_successful is None else bool(was_successful),
             "improvement_percentage": improvement * 100,
-            "duration_seconds": execution.get("duration", 0),
+            "duration_seconds": int(round(execution.get("duration", 0) or 0)),  # Laravel validates integer
             "context": {
                 "opportunity": opportunity,
                 "decision": decision,
