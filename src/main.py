@@ -13,21 +13,52 @@ from .utils.lock import cycle_lock
 
 logger = setup_logger(__name__, Config.LOG_LEVEL)
 
-async def run_cycle() -> Dict[str, Any]:
+async def run_cycle(brand_id: int = None) -> Dict[str, Any]:
     """Run a single agent cycle using the Orchestrator."""
     from .config import Config
     Config.validate()
-    logger.info("🔄 Starting agent cycle...")
-    with cycle_lock(Config.BRAND_ID) as acquired:
+    brand_id = brand_id if brand_id is not None else Config.BRAND_ID
+    logger.info(f"🔄 Starting agent cycle for brand {brand_id}...")
+    with cycle_lock(brand_id) as acquired:
         if not acquired:
             logger.warning(
-                f"⏭️  Another cycle is already running for brand {Config.BRAND_ID}; skipping"
+                f"⏭️  Another cycle is already running for brand {brand_id}; skipping"
             )
             return {"status": "skipped", "reason": "cycle_already_running"}
-        orchestrator = Orchestrator(Config.BRAND_ID)
+        orchestrator = Orchestrator(brand_id)
         result = await orchestrator.run_cycle()
     logger.info("✅ Cycle completed")
     return result
+
+async def resolve_brand_ids() -> list:
+    """Brands to run: AGENT_BRANDS=all | 1,2,3 | unset (-> BRAND_ID)."""
+    spec = (Config.AGENT_BRANDS or "").strip().lower()
+    if not spec:
+        return [Config.BRAND_ID]
+    if spec == "all":
+        from .utils.api_client import LaravelApiClient
+        client = LaravelApiClient()
+        try:
+            brands = await client.list_brands()
+        finally:
+            await client.close()
+        ids = [b["id"] for b in brands if b.get("is_active", True) and "id" in b]
+        return ids or [Config.BRAND_ID]
+    return [int(x) for x in spec.split(",") if x.strip()]
+
+
+async def run_cycles() -> Dict[str, Any]:
+    """Run one cycle per configured brand, sequentially, isolating failures."""
+    Config.validate()
+    results: Dict[str, Any] = {}
+    for brand_id in await resolve_brand_ids():
+        try:
+            results[str(brand_id)] = await run_cycle(brand_id)
+        except Exception as e:
+            logger.error(f"❌ Brand {brand_id} cycle crashed: {e}", exc_info=True)
+            results[str(brand_id)] = {"status": "failed", "error": str(e)}
+    return results
+
 
 async def run_forever():
     """Run the agent in an infinite loop."""
@@ -43,14 +74,14 @@ async def run_forever():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
     
-    await run_cycle()
+    await run_cycles()
     
     while not stop_event.is_set():
         try:
             await asyncio.sleep(Config.AGENT_INTERVAL)
             if stop_event.is_set():
                 break
-            await run_cycle()
+            await run_cycles()
         except asyncio.CancelledError:
             break
         except Exception as e:

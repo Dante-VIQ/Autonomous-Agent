@@ -21,12 +21,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-from src.main import run_cycle
+from src.main import run_cycles
 
 if __name__ == "__main__":
     try:
-        # ✅ Properly await the async function
-        asyncio.run(run_cycle())
+        # One cycle per configured brand (AGENT_BRANDS), then exit
+        asyncio.run(run_cycles())
     except KeyboardInterrupt:
         logging.info("🛑 Agent stopped by user")
         sys.exit(0)

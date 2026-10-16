@@ -37,6 +37,7 @@ class BaseSpecialist:
         self.domain = domain
         self.client = LaravelApiClient()
         self.safety = SafetyPolicy()
+        self._llm_lock = asyncio.Lock()
         self.memory = ExperienceMemory()
         self.tools = tools
         self.system_prompt = system_prompt
@@ -110,7 +111,11 @@ class BaseSpecialist:
         brand_id = context.get("brand_id")
         pattern = await self.memory.analyze_patterns(opportunity, brand_id)
         prompt = self._build_reasoning_prompt(opportunity, evidence, pattern, context)
-        response = await self._get_ai_reasoning(prompt)
+        # One in-flight LLM call per specialist instance: the Strands Agent objects
+        # are shared, so concurrent opportunities of different types run in
+        # parallel while same-type ones queue.
+        async with self._llm_lock:
+            response = await self._get_ai_reasoning(prompt)
         decision = self._parse_decision(response)
 
         # Safety is evaluated once, by the Orchestrator, after confidence

@@ -3,8 +3,11 @@
 import asyncio
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from typing import Dict, Any, List
 
+from .config import Config
 from .tools.monitor import monitor_opportunities
 from .specialists import SeoSpecialist, LeadSpecialist, ContentSpecialist, AnalyticsSpecialist
 from .policies.safety import SafetyPolicy
@@ -20,9 +23,8 @@ CRITICAL_ESCALATION_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
 
-# Mirrors the action -> category map in Laravel AgentController::executeAction.
-# ai_actions stores a category, not an action name, so the frequency-cap lookup
-# must query by category (this counts all actions in that category).
+# Fallback only: Laravel now stores ai_actions.action_name and the frequency cap
+# queries by action name. This category map is used when the name lookup fails.
 ACTION_CATEGORY = {
     "trigger_content_generation": "content",
     "create_blog_post": "content",
@@ -33,6 +35,44 @@ ACTION_CATEGORY = {
     "pause_campaign": "strategy",
     "adjust_campaign": "strategy",
 }
+
+
+SEVERITY_WEIGHT = {"critical": 4.0, "high": 3.0, "medium": 2.0, "low": 1.0}
+CONCURRENCY = int(os.getenv("AGENT_CONCURRENCY", "3"))
+
+
+def opportunity_priority(opp: Dict, fp_info: Dict) -> float:
+    """Higher = process first. Severity, recurrence and stated impact."""
+    severity = (opp.get("severity") or "medium").lower()
+    weight = SEVERITY_WEIGHT.get(severity, 2.0)
+    recurrence = max(int(fp_info.get("recurrence_count", 1) or 1), 1)
+    try:
+        impact = float(opp.get("estimated_impact") or 0)
+    except (TypeError, ValueError):
+        impact = 0.0
+    # log-ish impact bonus keeps a huge impact from drowning out severity
+    return weight * 100 + min(recurrence, 5) * 10 + min(impact, 10000) / 1000
+
+
+def summarize_results(results: List[Dict]) -> Dict[str, int]:
+    """Count outcomes of processed opportunities for the cycle report."""
+    counts = {"executed": 0, "requires_approval": 0, "failed": 0, "escalated": 0, "other": 0}
+    for r in results:
+        if not isinstance(r, dict) or r.get("success") is False:
+            counts["failed"] += 1
+            continue
+        status = (r.get("execution") or {}).get("status")
+        if status == "executed":
+            counts["executed"] += 1
+        elif status == "requires_approval":
+            counts["requires_approval"] += 1
+        elif status in ("failed", "timeout"):
+            counts["failed"] += 1
+        elif r.get("escalated") or "execution" not in r:
+            counts["escalated"] += 1
+        else:
+            counts["other"] += 1
+    return counts
 
 
 def _strip_internal(d: Dict) -> Dict:
@@ -61,8 +101,22 @@ class Orchestrator:
         self.verifier = Verifier(self.client)
         self.calibration = CalibrationService(self.client, brand_id)
         self._evidence_cache = None
+        # Serializes count -> safety check -> execute so concurrent opportunities
+        # cannot both pass the frequency cap before either action exists.
+        self._act_lock = asyncio.Lock()
+
+    async def _report_cycle(self, started_at: datetime, summary: Dict) -> None:
+        """Best-effort cycle report to Laravel; never breaks the cycle."""
+        try:
+            await self.client.record_cycle_run(
+                self.brand_id, summary.get("status", "completed"), summary,
+                started_at.isoformat(), datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as e:
+            logger.warning(f"Could not report cycle run: {e}")
 
     async def run_cycle(self) -> Dict[str, Any]:
+        started_at = datetime.now(timezone.utc)
         logger.info("━" * 50)
         logger.info(f"🔄 AGENT CYCLE — Brand {self.brand_id}")
         logger.info("━" * 50)
@@ -143,6 +197,7 @@ class Orchestrator:
             opportunities = await self._monitor()
             if not opportunities:
                 logger.info("No opportunities found, skipping cycle.")
+                await self._report_cycle(started_at, {"status": "idle", "reason": "no_opportunities"})
                 return {
                     "status": "idle",
                     "message": "No opportunities found",
@@ -157,6 +212,7 @@ class Orchestrator:
 
             if not filtered:
                 logger.info("   ✅ Nothing new to process.")
+                await self._report_cycle(started_at, {"status": "idle", "reason": "all_already_processed"})
                 return {
                     "status": "idle",
                     "message": "All opportunities already processed",
@@ -169,29 +225,54 @@ class Orchestrator:
             logger.info(f"   ✅ Evidence snapshot cached ({len(evidence)} items)")
 
             # 5. PROCESS OPPORTUNITIES
-            logger.info(f"⚙️ PROCESSING {len(filtered)} OPPORTUNITIES")
-            results = []
-            for i, (opp, fp_info) in enumerate(filtered):
-                title = opp.get("title", "Untitled")
-                logger.info(f"   → Opportunity #{i+1}: {opp.get('type')} - {title}")
-                result = await self._process_one_with_tracking(opp, evidence, fp_info)
-                results.append(result)
+            ranked = sorted(
+                filtered, key=lambda pair: opportunity_priority(pair[0], pair[1]), reverse=True
+            )
+            limit = max(Config.MAX_ACTIONS_PER_CYCLE, 1)
+            deferred = max(len(ranked) - limit, 0)
+            if deferred:
+                logger.info(f"   ⏳ {deferred} lower-priority opportunities deferred to next cycle")
+            ranked = ranked[:limit]
+
+            logger.info(
+                f"⚙️ PROCESSING {len(ranked)} OPPORTUNITIES (concurrency {CONCURRENCY})"
+            )
+            sem = asyncio.Semaphore(max(CONCURRENCY, 1))
+
+            async def _run(i, opp, fp_info):
+                async with sem:
+                    logger.info(f"   → Opportunity #{i+1}: {opp.get('type')} - {opp.get('title', 'Untitled')}")
+                    return await self._process_one_with_tracking(opp, evidence, fp_info)
+
+            raw = await asyncio.gather(
+                *[_run(i, opp, fp) for i, (opp, fp) in enumerate(ranked)],
+                return_exceptions=True,
+            )
+            results = [
+                r if not isinstance(r, BaseException) else {"success": False, "error": str(r)}
+                for r in raw
+            ]
+            counts = summarize_results(results)
 
             logger.info("━" * 50)
             logger.info("✅ CYCLE COMPLETE")
-            logger.info(f"   Processed: {len(results)} opportunities")
+            logger.info(f"   Processed: {len(results)} opportunities {counts}")
             logger.info(f"   Outcomes handled: {outcomes_processed}")
             logger.info("━" * 50)
 
-            return {
+            summary = {
                 "status": "completed",
                 "opportunities_processed": len(results),
+                "opportunities_deferred": deferred,
+                "counts": counts,
                 "outcomes_processed": outcomes_processed,
-                "results": results,
             }
+            await self._report_cycle(started_at, summary)
+            return {**summary, "results": results}
 
         except Exception as e:
             logger.error(f"❌ Cycle failed: {e}", exc_info=True)
+            await self._report_cycle(started_at, {"status": "failed", "error": str(e)})
             return {"status": "failed", "error": str(e)}
 
     async def _process_outcomes(self) -> int:
@@ -520,36 +601,38 @@ class Orchestrator:
         decision["confidence"] = adjusted_confidence
         decision["calibration_note"] = calibration_note
 
-        # Fetch recent action count for frequency enforcement.
-        # Silently degrade to None if the call fails — safety policy will
-        # skip the frequency check rather than crash.
-        recent_count = None
-        try:
-            count_resp = await self.client.get_action_count(
-                self.brand_id, ACTION_CATEGORY.get(action_name, "strategy")
-            )
-            recent_count = count_resp.get("count")
-        except Exception as e:
-            logger.warning(f"Failed to fetch action count for {action_name}: {e}")
+        async with self._act_lock:
+            # Fetch recent action count for frequency enforcement.
+            # Silently degrade to None if the call fails — safety policy will
+            # skip the frequency check rather than crash.
+            recent_count = None
+            try:
+                count_resp = await self.client.get_action_count(
+                    self.brand_id, ACTION_CATEGORY.get(action_name, "strategy"),
+                    action_name=action_name,
+                )
+                recent_count = count_resp.get("count")
+            except Exception as e:
+                logger.warning(f"Failed to fetch action count for {action_name}: {e}")
 
-        # Safety policy (single evaluation point)
-        safety_result = self.safety.evaluate({
-            "action_name": action_name or "unknown",
-            "brand_id": self.brand_id,
-            "confidence": adjusted_confidence,
-            "estimated_impact": decision.get("estimated_impact", 0),
-            "recent_count": recent_count,
-        })
+            # Safety policy (single evaluation point)
+            safety_result = self.safety.evaluate({
+                "action_name": action_name or "unknown",
+                "brand_id": self.brand_id,
+                "confidence": adjusted_confidence,
+                "estimated_impact": decision.get("estimated_impact", 0),
+                "recent_count": recent_count,
+            })
         
-        # Execute or approve
-        if safety_result.get("autonomous", False):
-            execution_result = await self.executor.execute(decision, self.brand_id)
-        else:
-            execution_result = {
-                "status": "requires_approval",
-                "message": "Action requires human review",
-                "decision": decision,
-            }
+            # Execute or approve
+            if safety_result.get("autonomous", False):
+                execution_result = await self.executor.execute(decision, self.brand_id)
+            else:
+                execution_result = {
+                    "status": "requires_approval",
+                    "message": "Action requires human review",
+                    "decision": decision,
+                }
 
         # Attach stated confidence so verify_immediate can register it with Laravel.
         execution_result["stated_confidence"] = decision.get("stated_confidence")
