@@ -141,6 +141,10 @@ class LaravelApiClient:
     async def get_analytics(self, brand_id: int) -> Dict:
         return await self._request("GET", f"/agent/analytics/{brand_id}")
 
+    async def get_evidence(self, brand_id: int) -> Dict:
+        """GA4 trends + Ahrefs authority/keywords/backlinks + data freshness, in one call."""
+        return await self._request("GET", f"/agent/evidence/{brand_id}")
+
     async def get_action_count(
         self, brand_id: int, category: str, window_seconds: int = 3600,
         action_name: str = None,
