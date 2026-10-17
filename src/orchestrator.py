@@ -452,15 +452,17 @@ class Orchestrator:
     async def _gather_evidence_snapshot(self) -> Dict:
         """Gather all evidence once per cycle."""
         try:
-            analytics, seo_issues, leads, campaigns = await asyncio.gather(
+            analytics, seo_issues, leads, campaigns, seo_evidence = await asyncio.gather(
                 self.client.get_analytics(self.brand_id),
                 self.client.get_seo_issues(self.brand_id),
                 self.client.get_pending_leads(self.brand_id),
                 self.client.get_campaigns(self.brand_id),
+                self.client.get_evidence(self.brand_id),
                 return_exceptions=True,
             )
 
             evidence = {
+                "evidence": seo_evidence if not isinstance(seo_evidence, Exception) else {},
                 "analytics": analytics if not isinstance(analytics, Exception) else {},
                 "seo_issues": seo_issues if not isinstance(seo_issues, Exception) else [],
                 "leads": leads if not isinstance(leads, Exception) else [],

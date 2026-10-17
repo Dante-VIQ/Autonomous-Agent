@@ -128,6 +128,7 @@ class BaseSpecialist:
             "seo_count": len(evidence.get("seo_issues", [])),
             "lead_count": len(evidence.get("leads", [])),
             "campaign_count": len(evidence.get("campaigns", [])),
+            "real_data": compact_evidence(evidence.get("evidence") or {}),
         }
 
         # Trim pattern insights to top 3
@@ -339,3 +340,51 @@ Return a JSON object with: action {{name, target, payload}}, confidence, reasoni
             "reasoning": "AI reasoning failed, fallback to no action",
             "estimated_impact": 0,
         })
+
+def compact_evidence(ev: dict) -> dict:
+    """Shrink the Laravel evidence payload to what fits in a reasoning prompt.
+
+    Missing data stays missing (absent keys / None), so the model is never
+    shown a made-up zero. Data-quality notes are always kept.
+    """
+    if not ev:
+        return {}
+
+    out: dict = {}
+    an = ev.get("analytics") or {}
+    if an.get("has_data"):
+        out["analytics"] = {
+            k: an[k]
+            for k in ("as_of", "stale_days", "window_days", "current", "previous",
+                      "changes_pct", "conversion_rate", "trend")
+            if k in an
+        }
+        out["analytics"]["top_pages"] = (an.get("top_pages") or [])[:5]
+        out["analytics"]["channels"] = (an.get("channels") or [])[:5]
+
+    seo = ev.get("seo") or {}
+    if seo.get("authority"):
+        out["authority"] = seo["authority"]
+    kw = seo.get("keywords") or {}
+    if kw.get("tracked"):
+        out["keywords"] = {
+            "as_of": kw.get("as_of"),
+            "tracked": kw["tracked"],
+            "movers": {
+                "up": (kw.get("movers") or {}).get("up", [])[:3],
+                "down": (kw.get("movers") or {}).get("down", [])[:3],
+            },
+            "striking_distance": (kw.get("striking_distance") or [])[:5],
+        }
+    bl = seo.get("backlinks") or {}
+    if bl:
+        out["backlinks"] = {
+            "new_last_30d": bl.get("new_last_30d"),
+            "lost_last_30d": bl.get("lost_last_30d"),
+            "lost_top": (bl.get("lost_top") or [])[:3],
+        }
+    if seo.get("open_issues"):
+        out["open_issues"] = seo["open_issues"]
+
+    out["data_quality"] = ev.get("data_quality") or {}
+    return out
