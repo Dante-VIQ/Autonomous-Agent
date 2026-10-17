@@ -217,8 +217,9 @@ confidence (0.0-1.0), your reasoning, and the estimated dollar impact.
 - trigger_content_generation  (for creating blog posts, social media, or email content)
 - resolve_seo_issue           (for fixing SEO problems)
 - notify_lead_response        (for following up with leads)
-- pause_campaign              (for pausing underperforming campaigns)
-- adjust_campaign             (for adjusting campaign settings)
+- pause_campaign              (payload: campaign_id, reason)
+- adjust_campaign             (payload: campaign_id, daily_budget as a number, reason;
+                               budget may change by at most 25% per action)
 - no_action_needed            (if no action is needed)
 
 Return a JSON object with: action {{name, target, payload}}, confidence, reasoning, estimated_impact.
