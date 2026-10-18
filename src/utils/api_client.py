@@ -261,6 +261,17 @@ class LaravelApiClient:
             "reason": reason,
         })
 
+    async def adjust_campaign(
+        self, brand_id: int, campaign_id: str, daily_budget: float, reason: str = None
+    ) -> Dict:
+        """Queue a daily-budget change (human-approved, capped per action by Laravel)."""
+        return await self._request("POST", "/agent/campaigns/adjust", {
+            "brandId": brand_id,
+            "campaignId": campaign_id,
+            "dailyBudget": daily_budget,
+            "reason": reason,
+        })
+
     # ============ CONTENT ============
 
     async def generate_content(
