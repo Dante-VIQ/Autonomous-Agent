@@ -392,5 +392,24 @@ def compact_evidence(ev: dict) -> dict:
     if seo.get("open_issues"):
         out["open_issues"] = seo["open_issues"]
 
+    comp = ev.get("competitors") or {}
+    if comp.get("scanned"):
+        out["competitors"] = {
+            "as_of": comp.get("as_of"),
+            "tracked": comp.get("tracked"),
+            "scanned": comp.get("scanned"),
+            "publishing": [
+                {
+                    "domain": c.get("domain"),
+                    "posts_last_30d": c.get("posts_last_30d"),
+                    "latest_post_at": c.get("latest_post_at"),
+                    "topics": list((c.get("top_terms") or {}))[:5],
+                }
+                for c in (comp.get("competitors") or [])
+                if c.get("status") == "ok"
+            ][:5],
+            "topic_gaps": [g.get("term") for g in (comp.get("topic_gaps") or [])[:8]],
+        }
+
     out["data_quality"] = ev.get("data_quality") or {}
     return out
