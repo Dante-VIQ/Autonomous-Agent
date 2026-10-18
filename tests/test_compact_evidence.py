@@ -40,3 +40,26 @@ def test_trims_lists_and_keeps_quality():
 def test_untracked_keywords_not_shown():
     out = compact_evidence({"seo": {"keywords": {"tracked": 0}}})
     assert "keywords" not in out
+
+
+def test_competitors_are_compacted_and_failed_scans_dropped():
+    ev = {"competitors": {
+        "tracked": 3, "scanned": 2, "as_of": "2026-10-18",
+        "competitors": [
+            {"domain": "a.com", "status": "ok", "posts_last_30d": 4, "latest_post_at": "2026-10-15",
+             "top_terms": {"maasai": 3, "mara": 2}},
+            {"domain": "b.com", "status": "error", "posts_last_30d": None, "top_terms": {}},
+            {"domain": "c.com", "status": "ok", "posts_last_30d": None, "latest_post_at": None, "top_terms": {}},
+        ],
+        "topic_gaps": [{"term": f"t{i}", "competitors": 2, "mentions": 3} for i in range(12)],
+    }}
+    out = compact_evidence(ev)
+    pub = out["competitors"]["publishing"]
+    assert [p["domain"] for p in pub] == ["a.com", "c.com"]
+    assert pub[0]["topics"] == ["maasai", "mara"]
+    assert pub[1]["posts_last_30d"] is None          # unknown stays unknown
+    assert out["competitors"]["topic_gaps"] == [f"t{i}" for i in range(8)]
+
+
+def test_no_scanned_competitors_means_no_block():
+    assert "competitors" not in compact_evidence({"competitors": {"tracked": 2, "scanned": 0, "competitors": []}})
