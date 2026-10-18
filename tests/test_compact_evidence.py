@@ -40,3 +40,28 @@ def test_trims_lists_and_keeps_quality():
 def test_untracked_keywords_not_shown():
     out = compact_evidence({"seo": {"keywords": {"tracked": 0}}})
     assert "keywords" not in out
+
+
+def test_listening_zero_mentions_is_kept_as_a_baseline():
+    out = compact_evidence({"listening": {
+        "state": "no_mentions_yet", "checked_on": "2026-10-18",
+        "brand": {"last_7d": 0, "previous_7d": 0, "change_pct": None, "sentiment_30d": {}},
+        "share_of_voice": [], "conversations": [], "sources": {"reddit": "blocked"}}})
+    lis = out["listening"]
+    assert lis["state"] == "no_mentions_yet"
+    assert lis["change_pct"] is None            # no baseline: no trend
+    assert lis["sources"]["reddit"] == "blocked"
+
+
+def test_listening_is_trimmed():
+    out = compact_evidence({"listening": {
+        "state": "active", "checked_on": "2026-10-18",
+        "brand": {"last_7d": 4, "change_pct": 33.3, "sentiment_30d": {"positive": 3}},
+        "share_of_voice": [{"term": str(i), "mentions": i} for i in range(9)],
+        "conversations": [{"title": f"t{i}"} for i in range(9)], "sources": {}}})
+    assert len(out["listening"]["share_of_voice"]) == 5
+    assert out["listening"]["conversations"] == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_no_listening_key_means_no_block():
+    assert "listening" not in compact_evidence({"data_quality": {"x": 1}})

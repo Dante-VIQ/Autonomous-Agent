@@ -391,5 +391,19 @@ def compact_evidence(ev: dict) -> dict:
     if seo.get("open_issues"):
         out["open_issues"] = seo["open_issues"]
 
+    lis = ev.get("listening") or {}
+    if lis.get("state"):
+        brand = lis.get("brand") or {}
+        out["listening"] = {
+            "state": lis["state"],          # no_mentions_yet is a baseline, not a problem
+            "checked_on": lis.get("checked_on"),
+            "brand_mentions_7d": brand.get("last_7d"),
+            "change_pct": brand.get("change_pct"),
+            "sentiment_30d": brand.get("sentiment_30d") or {},
+            "share_of_voice": (lis.get("share_of_voice") or [])[:5],
+            "conversations": [c.get("title") for c in (lis.get("conversations") or [])[:5]],
+            "sources": lis.get("sources") or {},
+        }
+
     out["data_quality"] = ev.get("data_quality") or {}
     return out
