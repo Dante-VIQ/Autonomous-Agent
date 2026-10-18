@@ -411,5 +411,44 @@ def compact_evidence(ev: dict) -> dict:
             "topic_gaps": [g.get("term") for g in (comp.get("topic_gaps") or [])[:8]],
         }
 
+    lis = ev.get("listening") or {}
+    if lis.get("state"):
+        brand = lis.get("brand") or {}
+        out["listening"] = {
+            "state": lis["state"],          # no_mentions_yet is a baseline, not a problem
+            "checked_on": lis.get("checked_on"),
+            "brand_mentions_7d": brand.get("last_7d"),
+            "change_pct": brand.get("change_pct"),
+            "sentiment_30d": brand.get("sentiment_30d") or {},
+            "share_of_voice": (lis.get("share_of_voice") or [])[:5],
+            "conversations": [c.get("title") for c in (lis.get("conversations") or [])[:5]],
+            "sources": lis.get("sources") or {},
+        }
+
+    per = ev.get("personas") or {}
+    if per:
+        out["personas"] = {
+            "count": per.get("count", 0),
+            # "hypothesis" personas are guesses; specialists must not present them as facts
+            "personas": [
+                {k: p.get(k) for k in ("name", "confidence", "stale", "goals", "pains", "objections", "channels")}
+                for p in (per.get("personas") or [])[:4]
+            ],
+            "note": per.get("note"),
+        }
+
+    con = ev.get("content") or {}
+    if con:
+        perf = con.get("performance") or {}
+        out["content"] = {
+            "plan": con.get("plan") or {},
+            # state "ok" is the only state where a leader may be treated as a real winner
+            "performance_state": perf.get("state"),
+            "measured_posts": perf.get("measured_posts"),
+            "overall_engagement_rate_pct": perf.get("overall_engagement_rate_pct"),
+            "leaders": perf.get("leaders") or {},
+            "note": con.get("note"),
+        }
+
     out["data_quality"] = ev.get("data_quality") or {}
     return out
