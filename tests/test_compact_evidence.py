@@ -65,3 +65,18 @@ def test_listening_is_trimmed():
 
 def test_no_listening_key_means_no_block():
     assert "listening" not in compact_evidence({"data_quality": {"x": 1}})
+
+
+def test_personas_keep_confidence_and_zero_count_note():
+    out = compact_evidence({"personas": {"count": 0, "personas": [], "note": "No personas defined yet."}})
+    assert out["personas"]["count"] == 0
+    assert "No personas" in out["personas"]["note"]
+
+
+def test_personas_are_trimmed_and_carry_confidence():
+    ps = [{"name": f"P{i}", "confidence": "hypothesis", "stale": False, "goals": ["g"], "pains": ["p"],
+           "objections": [], "channels": [], "extra": "x"} for i in range(6)]
+    out = compact_evidence({"personas": {"count": 6, "personas": ps, "note": "n"}})
+    assert len(out["personas"]["personas"]) == 4
+    assert out["personas"]["personas"][0]["confidence"] == "hypothesis"
+    assert "extra" not in out["personas"]["personas"][0]
