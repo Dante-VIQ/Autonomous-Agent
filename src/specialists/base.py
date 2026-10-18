@@ -218,8 +218,9 @@ confidence (0.0-1.0), your reasoning, and the estimated dollar impact.
 - trigger_content_generation  (for creating blog posts, social media, or email content)
 - resolve_seo_issue           (for fixing SEO problems)
 - notify_lead_response        (for following up with leads)
-- pause_campaign              (for pausing underperforming campaigns)
-- adjust_campaign             (for adjusting campaign settings)
+- pause_campaign              (payload: campaign_id, reason)
+- adjust_campaign             (payload: campaign_id, daily_budget as a number, reason;
+                               budget may change by at most 25% per action)
 - no_action_needed            (if no action is needed)
 
 Return a JSON object with: action {{name, target, payload}}, confidence, reasoning, estimated_impact.
@@ -391,18 +392,23 @@ def compact_evidence(ev: dict) -> dict:
     if seo.get("open_issues"):
         out["open_issues"] = seo["open_issues"]
 
-    lis = ev.get("listening") or {}
-    if lis.get("state"):
-        brand = lis.get("brand") or {}
-        out["listening"] = {
-            "state": lis["state"],          # no_mentions_yet is a baseline, not a problem
-            "checked_on": lis.get("checked_on"),
-            "brand_mentions_7d": brand.get("last_7d"),
-            "change_pct": brand.get("change_pct"),
-            "sentiment_30d": brand.get("sentiment_30d") or {},
-            "share_of_voice": (lis.get("share_of_voice") or [])[:5],
-            "conversations": [c.get("title") for c in (lis.get("conversations") or [])[:5]],
-            "sources": lis.get("sources") or {},
+    comp = ev.get("competitors") or {}
+    if comp.get("scanned"):
+        out["competitors"] = {
+            "as_of": comp.get("as_of"),
+            "tracked": comp.get("tracked"),
+            "scanned": comp.get("scanned"),
+            "publishing": [
+                {
+                    "domain": c.get("domain"),
+                    "posts_last_30d": c.get("posts_last_30d"),
+                    "latest_post_at": c.get("latest_post_at"),
+                    "topics": list((c.get("top_terms") or {}))[:5],
+                }
+                for c in (comp.get("competitors") or [])
+                if c.get("status") == "ok"
+            ][:5],
+            "topic_gaps": [g.get("term") for g in (comp.get("topic_gaps") or [])[:8]],
         }
 
     out["data_quality"] = ev.get("data_quality") or {}
