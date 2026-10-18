@@ -22,7 +22,6 @@ ESCALATION_THRESHOLD = 5
 CRITICAL_ESCALATION_THRESHOLD = 2
 
 logger = logging.getLogger(__name__)
-
 # Fallback only: Laravel now stores ai_actions.action_name and the frequency cap
 # queries by action name. This category map is used when the name lookup fails.
 ACTION_CATEGORY = {
