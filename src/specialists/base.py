@@ -411,5 +411,17 @@ def compact_evidence(ev: dict) -> dict:
             "topic_gaps": [g.get("term") for g in (comp.get("topic_gaps") or [])[:8]],
         }
 
+    per = ev.get("personas") or {}
+    if per:
+        out["personas"] = {
+            "count": per.get("count", 0),
+            # "hypothesis" personas are guesses; specialists must not present them as facts
+            "personas": [
+                {k: p.get(k) for k in ("name", "confidence", "stale", "goals", "pains", "objections", "channels")}
+                for p in (per.get("personas") or [])[:4]
+            ],
+            "note": per.get("note"),
+        }
+
     out["data_quality"] = ev.get("data_quality") or {}
     return out
