@@ -69,6 +69,8 @@ class Executor:
             "create_blog_post": self.client.generate_content,
             "generate_content": self.client.generate_content,
             "notify_lead_response": self.client.generate_follow_up,
+            "pause_campaign": self.client.pause_campaign,
+            "adjust_campaign": self.client.adjust_campaign,
         }
 
         func = action_map.get(name)
@@ -93,11 +95,21 @@ class Executor:
             )
         elif name == "notify_lead_response":
             return await func(brand_id, payload.get("lead_id"))
-        elif name in ("pause_campaign", "adjust_campaign"):
+        elif name == "pause_campaign":
             return await func(
                 brand_id,
                 payload.get("campaign_id"),
                 payload.get("reason", "Paused by AI"),
+            )
+        elif name == "adjust_campaign":
+            budget = payload.get("daily_budget")
+            if budget is None:
+                raise ValueError("adjust_campaign needs payload.daily_budget")
+            return await func(
+                brand_id,
+                payload.get("campaign_id"),
+                float(budget),
+                payload.get("reason", "Adjusted by AI"),
             )
         elif name in ("resolve_seo_issue", "run_site_scan"):
             return await func(brand_id, action_name=name)

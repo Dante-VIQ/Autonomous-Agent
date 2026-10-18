@@ -34,11 +34,18 @@ When analyzing an analytics alert (e.g., low conversions), you should:
         action = decision.get("action", {})
         action_name = action.get("name", "unknown")
 
-        if action_name in ("pause_campaign", "adjust_campaign"):
-            payload = action.get("payload", {})
+        payload = action.get("payload", {})
+        if action_name == "pause_campaign":
             result = await self.client.pause_campaign(
                 brand_id,
                 payload.get("campaign_id"),
+                payload.get("reason", "Paused by Analytics Specialist")
+            )
+        elif action_name == "adjust_campaign" and payload.get("daily_budget") is not None:
+            result = await self.client.adjust_campaign(
+                brand_id,
+                payload.get("campaign_id"),
+                float(payload["daily_budget"]),
                 payload.get("reason", "Adjusted by Analytics Specialist")
             )
         else:

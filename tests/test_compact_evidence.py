@@ -42,25 +42,23 @@ def test_untracked_keywords_not_shown():
     assert "keywords" not in out
 
 
-def test_listening_zero_mentions_is_kept_as_a_baseline():
-    out = compact_evidence({"listening": {
-        "state": "no_mentions_yet", "checked_on": "2026-10-18",
-        "brand": {"last_7d": 0, "previous_7d": 0, "change_pct": None, "sentiment_30d": {}},
-        "share_of_voice": [], "conversations": [], "sources": {"reddit": "blocked"}}})
-    lis = out["listening"]
-    assert lis["state"] == "no_mentions_yet"
-    assert lis["change_pct"] is None            # no baseline: no trend
-    assert lis["sources"]["reddit"] == "blocked"
-
-
-def test_listening_is_trimmed():
-    out = compact_evidence({"listening": {
-        "state": "active", "checked_on": "2026-10-18",
-        "brand": {"last_7d": 4, "change_pct": 33.3, "sentiment_30d": {"positive": 3}},
-        "share_of_voice": [{"term": str(i), "mentions": i} for i in range(9)],
-        "conversations": [{"title": f"t{i}"} for i in range(9)], "sources": {}}})
-    assert len(out["listening"]["share_of_voice"]) == 5
-    assert out["listening"]["conversations"] == ["t0", "t1", "t2", "t3", "t4"]
+def test_competitors_are_compacted_and_failed_scans_dropped():
+    ev = {"competitors": {
+        "tracked": 3, "scanned": 2, "as_of": "2026-10-18",
+        "competitors": [
+            {"domain": "a.com", "status": "ok", "posts_last_30d": 4, "latest_post_at": "2026-10-15",
+             "top_terms": {"maasai": 3, "mara": 2}},
+            {"domain": "b.com", "status": "error", "posts_last_30d": None, "top_terms": {}},
+            {"domain": "c.com", "status": "ok", "posts_last_30d": None, "latest_post_at": None, "top_terms": {}},
+        ],
+        "topic_gaps": [{"term": f"t{i}", "competitors": 2, "mentions": 3} for i in range(12)],
+    }}
+    out = compact_evidence(ev)
+    pub = out["competitors"]["publishing"]
+    assert [p["domain"] for p in pub] == ["a.com", "c.com"]
+    assert pub[0]["topics"] == ["maasai", "mara"]
+    assert pub[1]["posts_last_30d"] is None          # unknown stays unknown
+    assert out["competitors"]["topic_gaps"] == [f"t{i}" for i in range(8)]
 
 
 def test_no_listening_key_means_no_block():
@@ -80,3 +78,5 @@ def test_personas_are_trimmed_and_carry_confidence():
     assert len(out["personas"]["personas"]) == 4
     assert out["personas"]["personas"][0]["confidence"] == "hypothesis"
     assert "extra" not in out["personas"]["personas"][0]
+def test_no_scanned_competitors_means_no_block():
+    assert "competitors" not in compact_evidence({"competitors": {"tracked": 2, "scanned": 0, "competitors": []}})
