@@ -61,5 +61,48 @@ def test_competitors_are_compacted_and_failed_scans_dropped():
     assert out["competitors"]["topic_gaps"] == [f"t{i}" for i in range(8)]
 
 
+<<<<<<< HEAD
 def test_no_scanned_competitors_means_no_block():
     assert "competitors" not in compact_evidence({"competitors": {"tracked": 2, "scanned": 0, "competitors": []}})
+=======
+def test_listening_is_trimmed():
+    out = compact_evidence({"listening": {
+        "state": "active", "checked_on": "2026-10-18",
+        "brand": {"last_7d": 4, "change_pct": 33.3, "sentiment_30d": {"positive": 3}},
+        "share_of_voice": [{"term": str(i), "mentions": i} for i in range(9)],
+        "conversations": [{"title": f"t{i}"} for i in range(9)], "sources": {}}})
+    assert len(out["listening"]["share_of_voice"]) == 5
+    assert out["listening"]["conversations"] == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_no_listening_key_means_no_block():
+    assert "listening" not in compact_evidence({"data_quality": {"x": 1}})
+
+
+def test_personas_keep_confidence_and_zero_count_note():
+    out = compact_evidence({"personas": {"count": 0, "personas": [], "note": "No personas defined yet."}})
+    assert out["personas"]["count"] == 0
+    assert "No personas" in out["personas"]["note"]
+
+
+def test_personas_are_trimmed_and_carry_confidence():
+    ps = [{"name": f"P{i}", "confidence": "hypothesis", "stale": False, "goals": ["g"], "pains": ["p"],
+           "objections": [], "channels": [], "extra": "x"} for i in range(6)]
+    out = compact_evidence({"personas": {"count": 6, "personas": ps, "note": "n"}})
+    assert len(out["personas"]["personas"]) == 4
+    assert out["personas"]["personas"][0]["confidence"] == "hypothesis"
+    assert "extra" not in out["personas"]["personas"][0]
+>>>>>>> 1585b64 (Specialists see buyer personas with their confidence)
+
+
+def test_content_too_early_carries_no_leaders_and_posting_note():
+    out = compact_evidence({"content": {"plan": {"ideas": 2, "ready": 1, "posted": 3},
+        "performance": {"state": "too_early", "measured_posts": 3, "overall_engagement_rate_pct": 4.1, "leaders": {}},
+        "note": "Posting is done manually by a human."}})
+    c = out["content"]
+    assert c["performance_state"] == "too_early" and c["leaders"] == {}
+    assert "manually" in c["note"]
+
+
+def test_content_absent_is_omitted():
+    assert "content" not in compact_evidence({})
