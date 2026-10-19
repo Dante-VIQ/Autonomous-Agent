@@ -116,3 +116,23 @@ def test_content_too_early_carries_no_leaders_and_posting_note():
 
 def test_content_absent_is_omitted():
     assert "content" not in compact_evidence({})
+
+
+def test_audience_ads_too_early_has_no_groups_and_is_flagged():
+    out = compact_evidence({"audience": {"ads": {"state": "too_early", "currency": "USD", "total": {"impressions": 300}, "groups": {}},
+                                         "comments": {"total_30d": 0}}})
+    assert out["audience"]["ads"]["state"] == "too_early"
+    assert out["audience"]["ads"]["groups"] == {}
+    assert "comments" not in out["audience"]
+
+
+def test_audience_comments_are_trimmed_to_five_questions():
+    out = compact_evidence({"audience": {"ads": {}, "comments": {"total_30d": 9, "sentiment_30d": {"positive": 4},
+                                                                  "recent_questions": [f"q{i}" for i in range(8)]}}})
+    assert out["audience"]["comments"]["recent_questions"] == ["q0", "q1", "q2", "q3", "q4"]
+    assert "ads" not in out["audience"]
+
+
+def test_audience_absent_or_empty_is_omitted():
+    assert "audience" not in compact_evidence({"data_quality": {}})
+    assert "audience" not in compact_evidence({"audience": {"ads": {}, "comments": {"total_30d": 0}}})

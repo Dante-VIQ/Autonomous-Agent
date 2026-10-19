@@ -450,5 +450,27 @@ def compact_evidence(ev: dict) -> dict:
             "note": con.get("note"),
         }
 
+    aud = ev.get("audience") or {}
+    if aud:
+        ads = aud.get("ads") or {}
+        com = aud.get("comments") or {}
+        block: dict = {}
+        if ads.get("state"):
+            # only state "ok" has breakdowns; too_early / no_data must not be read as "ads perform badly"
+            block["ads"] = {
+                "state": ads["state"],
+                "currency": ads.get("currency"),
+                "total": ads.get("total"),
+                "groups": ads.get("groups") or {},
+            }
+        if com.get("total_30d"):
+            block["comments"] = {
+                "total_30d": com["total_30d"],
+                "sentiment_30d": com.get("sentiment_30d") or {},   # rough word-based guess
+                "recent_questions": (com.get("recent_questions") or [])[:5],
+            }
+        if block:
+            out["audience"] = block
+
     out["data_quality"] = ev.get("data_quality") or {}
     return out
