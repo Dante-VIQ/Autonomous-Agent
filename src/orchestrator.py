@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Optional, Dict, Any, List
 
 from .config import Config
 from .tools.monitor import monitor_opportunities
@@ -81,6 +81,11 @@ def _strip_internal(d: Dict) -> Dict:
     return {k: v for k, v in d.items() if not k.startswith("_")}
 
 
+
+class MonitorError(Exception):
+    """Discovery could not read opportunities (as opposed to reading none)."""
+
+
 class Orchestrator:
     def __init__(self, brand_id: int):
         self.brand_id = brand_id
@@ -103,6 +108,13 @@ class Orchestrator:
         # Serializes count -> safety check -> execute so concurrent opportunities
         # cannot both pass the frequency cap before either action exists.
         self._act_lock = asyncio.Lock()
+
+    @staticmethod
+    def _auth_failure(e: Exception) -> Optional[int]:
+        """The HTTP status when Laravel rejected our credentials (401/403), else None."""
+        resp = getattr(e, "response", None)
+        code = getattr(resp, "status_code", None)
+        return code if code in (401, 403) else None
 
     async def _report_cycle(self, started_at: datetime, summary: Dict) -> None:
         """Best-effort cycle report to Laravel; never breaks the cycle."""
@@ -132,6 +144,15 @@ class Orchestrator:
                 else:
                     logger.info("   ✅ All data is already fresh!")
             except Exception as e:
+                code = self._auth_failure(e)
+                if code:
+                    # Every later call would fail the same way. Stop, and say why, instead of looking at "no data".
+                    msg = (f"Laravel rejected the agent's API key (HTTP {code}). Check that LARAVEL_API_KEY here "
+                           f"matches the server's key (or the brand key from `php artisan agent:issue-key`), and that "
+                           f"LARAVEL_API_URL points at the right site. No data was read this cycle.")
+                    logger.error(f"   ❌ {msg}")
+                    await self._report_cycle(started_at, {"status": "failed", "error": msg})
+                    return {"status": "failed", "error": msg}
                 logger.warning(f"   ⚠  Freshness check failed (continuing): {e}")
 
             # 0.5. FETCH DAILY BRIEF
@@ -181,7 +202,9 @@ class Orchestrator:
             logger.info("🔍 CHECKING VERIFICATIONS")
             try:
                 due_results = await self.verifier.run_due_verifications(self.brand_id)
-                if due_results.get("hour_1") or due_results.get("day_1"):
+                if due_results.get("error"):
+                    logger.warning(f"   ⚠  Could not check verifications (unknown, not zero): {due_results['error']}")
+                elif due_results.get("hour_1") or due_results.get("day_1"):
                     logger.info(
                         f"   ✅ Ran {due_results.get('hour_1', 0)} hour-1, "
                         f"{due_results.get('day_1', 0)} day-1 verifications"
@@ -193,7 +216,12 @@ class Orchestrator:
 
             # 2. DISCOVERY
             logger.info("📡 DISCOVERY")
-            opportunities = await self._monitor()
+            try:
+                opportunities = await self._monitor()
+            except MonitorError as e:
+                logger.error(f"   ❌ Discovery failed, so nothing was checked this cycle: {e}")
+                await self._report_cycle(started_at, {"status": "failed", "error": f"discovery failed: {e}"})
+                return {"status": "failed", "error": f"discovery failed: {e}"}
             if not opportunities:
                 logger.info("No opportunities found, skipping cycle.")
                 await self._report_cycle(started_at, {"status": "idle", "reason": "no_opportunities"})
@@ -669,12 +697,13 @@ class Orchestrator:
         result_str = await monitor_opportunities(self.brand_id)
         try:
             data = json.loads(result_str)
-            opportunities = data.get("opportunities", [])
-            logger.info(f"   ✅ Found {len(opportunities)} opportunities")
-            return opportunities
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse monitor response: {e}")
-            return []
+            raise MonitorError(f"unreadable monitor response: {e}")
+        if data.get("success") is False:
+            raise MonitorError(data.get("error") or "monitor reported failure")
+        opportunities = data.get("opportunities", [])
+        logger.info(f"   ✅ Found {len(opportunities)} opportunities")
+        return opportunities
 
     def _should_escalate(self, fp_info: dict, opportunity: dict) -> bool:
         """Decide if this recurrence should escalate to human."""
