@@ -57,7 +57,7 @@ class Verifier:
             due = await self.client.get_due_verifications(brand_id)
         except Exception as e:
             logger.warning(f"Failed to fetch due verifications: {e}")
-            return {"hour_1": 0, "day_1": 0}
+            return {"hour_1": 0, "day_1": 0, "error": str(e)}   # callers must not read this as "none due"
 
         hour_1_count = 0
         day_1_count = 0

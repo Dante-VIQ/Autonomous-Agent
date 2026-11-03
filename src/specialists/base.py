@@ -411,6 +411,20 @@ def compact_evidence(ev: dict) -> dict:
             "topic_gaps": [g.get("term") for g in (comp.get("topic_gaps") or [])[:8]],
         }
 
+    lis = ev.get("listening") or {}
+    if lis.get("state"):
+        brand = lis.get("brand") or {}
+        out["listening"] = {
+            "state": lis["state"],          # no_mentions_yet is a baseline, not a problem
+            "checked_on": lis.get("checked_on"),
+            "brand_mentions_7d": brand.get("last_7d"),
+            "change_pct": brand.get("change_pct"),
+            "sentiment_30d": brand.get("sentiment_30d") or {},
+            "share_of_voice": (lis.get("share_of_voice") or [])[:5],
+            "conversations": [c.get("title") for c in (lis.get("conversations") or [])[:5]],
+            "sources": lis.get("sources") or {},
+        }
+
     per = ev.get("personas") or {}
     if per:
         out["personas"] = {
@@ -422,6 +436,41 @@ def compact_evidence(ev: dict) -> dict:
             ],
             "note": per.get("note"),
         }
+
+    con = ev.get("content") or {}
+    if con:
+        perf = con.get("performance") or {}
+        out["content"] = {
+            "plan": con.get("plan") or {},
+            # state "ok" is the only state where a leader may be treated as a real winner
+            "performance_state": perf.get("state"),
+            "measured_posts": perf.get("measured_posts"),
+            "overall_engagement_rate_pct": perf.get("overall_engagement_rate_pct"),
+            "leaders": perf.get("leaders") or {},
+            "note": con.get("note"),
+        }
+
+    aud = ev.get("audience") or {}
+    if aud:
+        ads = aud.get("ads") or {}
+        com = aud.get("comments") or {}
+        block: dict = {}
+        if ads.get("state"):
+            # only state "ok" has breakdowns; too_early / no_data must not be read as "ads perform badly"
+            block["ads"] = {
+                "state": ads["state"],
+                "currency": ads.get("currency"),
+                "total": ads.get("total"),
+                "groups": ads.get("groups") or {},
+            }
+        if com.get("total_30d"):
+            block["comments"] = {
+                "total_30d": com["total_30d"],
+                "sentiment_30d": com.get("sentiment_30d") or {},   # rough word-based guess
+                "recent_questions": (com.get("recent_questions") or [])[:5],
+            }
+        if block:
+            out["audience"] = block
 
     out["data_quality"] = ev.get("data_quality") or {}
     return out
