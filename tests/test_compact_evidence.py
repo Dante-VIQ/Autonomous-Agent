@@ -121,6 +121,8 @@ def test_personas_are_trimmed_and_carry_confidence():
     assert out["personas"]["personas"][0]["confidence"] == "hypothesis"
     assert "extra" not in out["personas"]["personas"][0]
 
+main
+
 
 def test_content_too_early_carries_no_leaders_and_posting_note():
     out = compact_evidence({"content": {"plan": {"ideas": 2, "ready": 1, "posted": 3},
