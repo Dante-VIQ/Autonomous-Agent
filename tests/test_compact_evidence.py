@@ -61,10 +61,19 @@ def test_competitors_are_compacted_and_failed_scans_dropped():
     assert out["competitors"]["topic_gaps"] == [f"t{i}" for i in range(8)]
 
 
-<<<<<<< HEAD
-def test_no_scanned_competitors_means_no_block():
-    assert "competitors" not in compact_evidence({"competitors": {"tracked": 2, "scanned": 0, "competitors": []}})
-=======
+
+
+def test_listening_zero_mentions_is_kept_as_a_baseline():
+    out = compact_evidence({"listening": {
+        "state": "no_mentions_yet", "checked_on": "2026-10-18",
+        "brand": {"last_7d": 0, "previous_7d": 0, "change_pct": None, "sentiment_30d": {}},
+        "share_of_voice": [], "conversations": [], "sources": {"reddit": "blocked"}}})
+    lis = out["listening"]
+    assert lis["state"] == "no_mentions_yet"
+    assert lis["change_pct"] is None            # no baseline: no trend
+    assert lis["sources"]["reddit"] == "blocked"
+
+
 def test_listening_is_trimmed():
     out = compact_evidence({"listening": {
         "state": "active", "checked_on": "2026-10-18",
@@ -92,7 +101,8 @@ def test_personas_are_trimmed_and_carry_confidence():
     assert len(out["personas"]["personas"]) == 4
     assert out["personas"]["personas"][0]["confidence"] == "hypothesis"
     assert "extra" not in out["personas"]["personas"][0]
->>>>>>> 1585b64 (Specialists see buyer personas with their confidence)
+
+main
 
 
 def test_content_too_early_carries_no_leaders_and_posting_note():
@@ -106,3 +116,23 @@ def test_content_too_early_carries_no_leaders_and_posting_note():
 
 def test_content_absent_is_omitted():
     assert "content" not in compact_evidence({})
+
+
+def test_audience_ads_too_early_has_no_groups_and_is_flagged():
+    out = compact_evidence({"audience": {"ads": {"state": "too_early", "currency": "USD", "total": {"impressions": 300}, "groups": {}},
+                                         "comments": {"total_30d": 0}}})
+    assert out["audience"]["ads"]["state"] == "too_early"
+    assert out["audience"]["ads"]["groups"] == {}
+    assert "comments" not in out["audience"]
+
+
+def test_audience_comments_are_trimmed_to_five_questions():
+    out = compact_evidence({"audience": {"ads": {}, "comments": {"total_30d": 9, "sentiment_30d": {"positive": 4},
+                                                                  "recent_questions": [f"q{i}" for i in range(8)]}}})
+    assert out["audience"]["comments"]["recent_questions"] == ["q0", "q1", "q2", "q3", "q4"]
+    assert "ads" not in out["audience"]
+
+
+def test_audience_absent_or_empty_is_omitted():
+    assert "audience" not in compact_evidence({"data_quality": {}})
+    assert "audience" not in compact_evidence({"audience": {"ads": {}, "comments": {"total_30d": 0}}})
